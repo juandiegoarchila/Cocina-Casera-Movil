@@ -420,7 +420,7 @@ const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
     const cap = (s) => s ? s.charAt(0).toUpperCase()+s.slice(1) : '';
     const tipoLabel = `${cap(kind)} ${svc ? cap(svc) : ''}`.trim();
 
-    // Generar recibo de texto para impresora térmica
+    // Generar recibo de texto para impresora térmica (IDÉNTICO AL WEB)
     const generateThermalReceipt = () => {
       let receipt = '';
       
@@ -431,10 +431,11 @@ const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
       // Inicializar impresora
       receipt += ESC + '@'; // Inicializar
       
-      // El logo se imprime como imagen separadamente, así que empezamos con info
+      // El logo se imprime como imagen separadamente
+      // Después del logo, agregar el título centrado
       receipt += ESC + 'a' + '\x01'; // Centrar texto
-      receipt += ESC + '!' + '\x08'; // Texto en negrita
-      receipt += 'COCINA CASERA\n';
+      receipt += ESC + '!' + '\x18'; // Texto doble altura y ancho
+      receipt += 'Cocina Casera\n';
       receipt += ESC + '!' + '\x00'; // Texto normal
       receipt += '(Uso interno - No es factura DIAN)\n';
       receipt += '\n';
@@ -443,77 +444,72 @@ const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
       receipt += ESC + 'a' + '\x00'; // Alinear izquierda
       receipt += '================================\n';
       
-      // Información del pedido
-      receipt += `TIPO: ${tipoLabel}\n`;
-      if (tableNumber) receipt += `MESA: ${tableNumber}\n`;
-      receipt += `FECHA: ${fecha}\n`;
-      receipt += `ID: ${id.substring(0, 8)}\n`;
-      if (note) receipt += `NOTA: ${note}\n`;
+      // Información del pedido (igual al web)
+      receipt += `Tipo: ${tipoLabel}\n`;
+      if (tableNumber) receipt += `Mesa: ${tableNumber}\n`;
+      receipt += `Fecha: ${fecha}\n`;
+      if (note) receipt += `Nota: ${note}\n`;
       receipt += '================================\n';
       
-      // Items del pedido
-      receipt += ESC + '!' + '\x08'; // Texto en negrita
-      receipt += 'ITEMS:\n';
-      receipt += ESC + '!' + '\x00'; // Texto normal
+      // Items del pedido (formato igual al web)
+      receipt += 'Items:\n';
       
       items.forEach(item => {
         const qty = Number(item.quantity || 0);
         const unit = Number(item.price || 0);
         const lineTotal = qty * unit;
         
-        // Nombre del item (línea completa)
+        // Nombre del item en negrita
+        receipt += ESC + '!' + '\x08'; // Negrita
         receipt += `${item.name}\n`;
+        receipt += ESC + '!' + '\x00'; // Normal
         
-        // Cantidad, precio unitario y total (alineado)
-        const qtyText = `${qty}x`;
-        const unitText = `$${unit.toLocaleString('es-CO')}`;
+        // Cantidad y precio con alineación
+        const qtyLine = `  ${qty}x $${unit.toLocaleString('es-CO')}`;
         const totalText = `$${lineTotal.toLocaleString('es-CO')}`;
-        
-        // Crear línea con espaciado
-        const lineContent = `  ${qtyText} ${unitText}`;
-        const spaces = ' '.repeat(Math.max(1, 32 - lineContent.length - totalText.length));
-        receipt += `${lineContent}${spaces}${totalText}\n`;
+        const spaces = ' '.repeat(Math.max(1, 32 - qtyLine.length - totalText.length));
+        receipt += `${qtyLine}${spaces}${totalText}\n`;
       });
       
       receipt += '================================\n';
       
-      // Totales
-      receipt += ESC + '!' + '\x08'; // Texto en negrita
-      const totalText = `TOTAL: $${total.toLocaleString('es-CO')}`;
-      receipt += totalText + '\n';
-      receipt += ESC + '!' + '\x00'; // Texto normal
-      
-      // Información de pago
-      receipt += `PAGO: ${paymentMethod.charAt(0).toUpperCase() + paymentMethod.slice(1)}\n`;
+      // Totales (formato igual al web)
+      receipt += ESC + '!' + '\x08'; // Negrita
+      receipt += `Total: $${total.toLocaleString('es-CO')}\n`;
+      receipt += ESC + '!' + '\x00'; // Normal
+      receipt += `Pago: ${paymentMethod.charAt(0).toUpperCase() + paymentMethod.slice(1)}\n`;
       if (paymentMethod === 'efectivo') {
-        receipt += `RECIBIDO: $${(cashReceived || 0).toLocaleString('es-CO')}\n`;
-        receipt += `VUELTOS: $${(changeGiven || 0).toLocaleString('es-CO')}\n`;
+        receipt += `Recibido: $${(cashReceived || 0).toLocaleString('es-CO')}\n`;
+        receipt += `Vueltos: $${(changeGiven || 0).toLocaleString('es-CO')}\n`;
       }
       
       receipt += '================================\n';
-      receipt += ESC + 'a' + '\x01'; // Centrar texto
-      receipt += ESC + '!' + '\x08'; // Texto en negrita
+      
+      // Mensaje de agradecimiento (centrado como web)
+      receipt += ESC + 'a' + '\x01'; // Centrar
+      receipt += ESC + '!' + '\x08'; // Negrita
       receipt += '¡Gracias por su compra!\n';
-      receipt += ESC + '!' + '\x00'; // Texto normal
-      receipt += '\n';
+      receipt += ESC + '!' + '\x00'; // Normal
       receipt += 'Te esperamos mañana con un\n';
-      receipt += 'nuevo menu.\n';
-      receipt += 'Escribenos al 301 6476916\n';
+      receipt += 'nuevo menú.\n';
+      receipt += 'Escríbenos al 301 6476916\n';
       receipt += 'Calle 133#126c-09\n';
       receipt += '\n';
       
-      // QR Code para WhatsApp (si la impresora lo soporta)
-      receipt += 'Escanea nuestro QR para\n';
-      receipt += 'recibir el menu diario:\n';
+      // QR Code texto (igual al web)
+      receipt += 'Escanea este código QR para\n';
+      receipt += 'unirte a nuestro canal de\n';
+      receipt += 'WhatsApp y recibir nuestro\n';
+      receipt += 'menú diario:\n';
       receipt += '\n';
       
-      // Generar QR code simple (algunos comandos ESC/POS)
+      // Generar QR code nativo
       receipt += GS + '(k' + '\x04' + '\x00' + '\x31' + '\x41' + '\x32' + '\x00'; // QR setup
-      receipt += GS + '(k' + '\x03' + '\x00' + '\x31' + '\x43' + '\x08'; // QR size
+      receipt += GS + '(k' + '\x03' + '\x00' + '\x31' + '\x43' + '\x08'; // QR size 8
       receipt += GS + '(k' + '\x03' + '\x00' + '\x31' + '\x45' + '\x30'; // QR error correction
       
-      // Datos del QR (WhatsApp)
-      const qrData = 'https://wa.me/573016476916?text=Hola%20quiero%20el%20menu';
+      // Datos del QR (WhatsApp - igual al web)
+      const qrData = 'https://wa.me/573016476916?text=Hola%20quiero%20el%20menú';
       const qrLength = qrData.length + 3;
       const qrLenLow = qrLength % 256;
       const qrLenHigh = Math.floor(qrLength / 256);

@@ -175,11 +175,18 @@ public class PrinterPlugin extends Plugin {
                         Bitmap bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.length);
                         
                         if (bitmap != null) {
-                            // Redimensionar imagen para impresora térmica (máximo 384 pixels de ancho)
-                            int maxWidth = 384;
+                            // Redimensionar imagen para logo de recibo térmico (110px como web)
+                            int maxWidth = 110; // Mismo tamaño que en la web
                             if (bitmap.getWidth() > maxWidth) {
                                 int newHeight = (bitmap.getHeight() * maxWidth) / bitmap.getWidth();
                                 bitmap = Bitmap.createScaledBitmap(bitmap, maxWidth, newHeight, false);
+                            }
+                            
+                            // Limitar altura también para mantener proporciones
+                            int maxHeight = 80; // Altura proporcional
+                            if (bitmap.getHeight() > maxHeight) {
+                                int newWidth = (bitmap.getWidth() * maxHeight) / bitmap.getHeight();
+                                bitmap = Bitmap.createScaledBitmap(bitmap, newWidth, maxHeight, false);
                             }
                             
                             // Convertir imagen a comandos ESC/POS
@@ -240,10 +247,17 @@ public class PrinterPlugin extends Plugin {
                         int pixelX = x * 8 + bit;
                         if (pixelX < width) {
                             int pixel = bitmap.getPixel(pixelX, y);
+                            // Aplicar filtro similar al web (brightness(0) contrast(1.5))
                             int gray = (int)(0.299 * ((pixel >> 16) & 0xFF) + 
                                            0.587 * ((pixel >> 8) & 0xFF) + 
                                            0.114 * (pixel & 0xFF));
-                            if (gray < 128) { // Si es oscuro, imprimir
+                            
+                            // Simular el filtro web brightness(0) contrast(1.5)
+                            gray = (int)((gray - 128) * 1.5 + 128);
+                            gray = Math.max(0, Math.min(255, gray));
+                            
+                            // Umbral optimizado para impresoras térmicas
+                            if (gray < 128) {
                                 dataByte |= (1 << (7 - bit));
                             }
                         }
@@ -252,9 +266,9 @@ public class PrinterPlugin extends Plugin {
                 }
             }
             
-            // Regresar a alineación izquierda
+            // Regresar a alineación izquierda y agregar espacio
             stream.write(new byte[]{0x1B, 0x61, 0x00}); // ESC a 0
-            stream.write(new byte[]{0x0A}); // Nueva línea
+            stream.write(new byte[]{0x0A, 0x0A}); // Dos líneas nuevas para separación
             
         } catch (Exception e) {
             // En caso de error, retornar array vacío
