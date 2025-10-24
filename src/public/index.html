@@ -1,0 +1,30 @@
+
+//src/public/index.html
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Pide tu almuerzo casero fácil y rápido con Cocina Casera.">
+    <title>Cocina Casera</title>
+    <!-- Preconnect para acelerar conexiones a Firebase -->
+    <link rel="preconnect" href="https://firestore.googleapis.com">
+    <link rel="dns-prefetch" href="https://firestore.googleapis.com">
+    <link rel="preconnect" href="https://identitytoolkit.googleapis.com">
+    <!-- Preload de recursos críticos (reemplaza las rutas con las tuyas) -->
+    <link rel="preload" href="/path-to-your-critical-font.woff2" as="font" type="font/woff2" crossorigin>
+    <link rel="preload" href="/path-to-your-critical-image.webp" as="image">
+    <!-- CSS crítico inline para above-the-fold (ajusta según tu diseño) -->
+    <style>
+      body { font-family: 'Arial', sans-serif; margin: 0; }
+      .header { background: #fff; padding: 1rem; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- Scripts de Firebase con defer para no bloquear renderizado -->
+    <script defer src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app.js"></script>
+    <script defer src="https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore.js"></script>
+    <script defer src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth.js"></script>
+  </body>
+</html>

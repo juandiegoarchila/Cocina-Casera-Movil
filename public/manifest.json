@@ -1,0 +1,29 @@
+{
+  "short_name": "Cocina Casera",
+  "name": "Cocina Casera - Delivery App",
+  "description": "Aplicación móvil para pedidos de cocina casera y delivery",
+  "icons": [
+    {
+      "src": "android-chrome-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "android-chrome-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "favicon512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ],
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#f97316",
+  "background_color": "#ffffff",
+  "orientation": "portrait",
+  "categories": ["food", "delivery", "business"],
+  "lang": "es-CO"
+}

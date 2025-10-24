@@ -1,0 +1,85 @@
+# Dependencias
+node_modules/
+.pnp
+.pnp.js
+package-lock.json
+scripts/package-lock.json
+
+# Testing
+coverage/
+.nyc_output
+
+# Producción
+build/
+dist/
+
+# Configuración Firebase (CRÍTICO - NO SUBIR)
+src/config/firebase.js
+firebase.json
+.firebaserc
+firebase-debug.log
+firebase-debug.*.log
+pglite-debug.log
+
+# Variables de entorno (CRÍTICO - NO SUBIR)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Archivos de seguridad (CRÍTICO - NO SUBIR)
+*.key
+*.pem
+*.cert
+*.p12
+scripts/serviceAccountKey.json
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Archivos del sistema
+.DS_Store
+Thumbs.db
+
+# IDEs y editores
+.idea/
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# Archivos temporales
+*.swp
+*.swo
+*~
+.tmp/
+.temp/
+
+# Cachés
+.cache/
+.parcel-cache/
+.next/
+.nuxt/
+
+# Archivos específicos que NO debes subir
+pglite-debug.log
+
+# MANTENER estos archivos importantes:
+# ✅ package.json (raíz)
+# ✅ src/package.json  
+# ✅ scripts/package.json
+# ✅ tailwind.config.js
+# ✅ postcss.config.js
+# ✅ README.md

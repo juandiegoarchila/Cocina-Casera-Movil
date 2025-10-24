@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Cocina Casera</string>
+    <string name="title_activity_main">Cocina Casera</string>
+    <string name="package_name">com.cocinacastera.app</string>
+    <string name="custom_url_scheme">com.cocinacastera.app</string>
+</resources>

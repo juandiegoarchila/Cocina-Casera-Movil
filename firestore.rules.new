@@ -1,0 +1,103 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    function userDoc() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+    function hasUser() {
+      return isAuthenticated() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+    function userRole() {
+      return hasUser() ? userDoc().data.role : null;
+    }
+    function isAdmin() { return userRole() == 2; }
+    function isWaiter() { return userRole() == 3; }
+    function isCourier() { return userRole() == 4; }
+    function changedKeys() {
+      return request.resource.data.diff(resource.data).changedKeys();
+    }
+    function onlyStatusEditableFields() {
+      // Permitir que domiciliario toque únicamente estado, domiciliario asignado y updatedAt
+      return changedKeys().hasOnly(['status', 'deliveryPerson', 'updatedAt']);
+    }
+    
+    // Usuarios: Solo el propio usuario puede leer/escribir sus datos
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Órdenes normales
+    match /orders/{orderId} {
+      allow read: if isAuthenticated();
+      // Admin puede escribir todo
+      allow write: if isAuthenticated() && (
+        isAdmin() ||
+        // Domiciliario: solo actualizar status/deliveryPerson/updatedAt/payments/paymentUpdatedAt/paymentUpdatedBy
+        (isCourier() && (onlyStatusEditableFields() || 
+          changedKeys().hasOnly(['status', 'deliveryPerson', 'updatedAt', 'payments', 'paymentUpdatedAt', 'paymentUpdatedBy'])))
+      );
+    }
+
+    // Órdenes de mesas: Meseras (rol 3) y administradores (rol 2) pueden leer/escribir
+    match /tableOrders/{orderId} {
+      allow read, write: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 2 || 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 3);
+    }
+
+    // Órdenes de desayuno: Meseras (rol 3) y administradores (rol 2) pueden leer/escribir
+    match /breakfastOrders/{orderId} {
+      allow read, write: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 2 || 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 3);
+    }
+
+    // Órdenes de desayuno para domicilios (deliveryBreakfastOrders)
+    match /deliveryBreakfastOrders/{orderId} {
+      allow read: if isAuthenticated();
+      // Admin (2) y Meseras (3) pueden escribir libremente; Domiciliario (4) status/deliveryPerson/updatedAt/payments
+      allow write: if isAuthenticated() && (
+        isAdmin() || isWaiter() || (isCourier() && (onlyStatusEditableFields() || 
+          changedKeys().hasOnly(['status', 'deliveryPerson', 'updatedAt', 'payments', 'paymentUpdatedAt', 'paymentUpdatedBy'])))
+      );
+    }
+
+    // NUEVO: Pagos - Los domiciliarios también pueden leer y escribir
+    match /payments/{paymentId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && (isAdmin() || isWaiter() || isCourier());
+      allow update, delete: if isAuthenticated() && (
+        isAdmin() || 
+        // Domiciliarios solo pueden modificar pagos creados por ellos
+        (isCourier() && resource.data.createdBy == request.auth.email)
+      );
+    }
+
+    // NUEVO: Snapshots de pagos por día - Los domiciliarios pueden leer, pero solo admin puede escribir
+    match /paymentsByDay/{dayId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && (isAdmin() || isCourier());
+    }
+
+    // Configuraciones: Solo administradores (rol 2) pueden escribir
+    match /settings/{document=**} {
+      allow read: if true;
+      allow write: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 2;
+    }
+
+    // Otras colecciones: Solo administradores (rol 2) pueden escribir
+    match /{collection}/{document=**} {
+      allow read: if true;
+      allow write: if request.auth != null && 
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 2;
+    }
+  }
+}

@@ -1,0 +1,115 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // -------------------- Helpers SIMPLIFICADOS --------------------
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    function isAdmin() { 
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 2; 
+    }
+    function isStaff() { 
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in [2, 3, 4]; 
+    }
+
+    // -------------------- Users --------------------
+    // Cada usuario sólo puede leer/escribir su propio documento
+    match /users/{userId} {
+      allow read, write: if isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // -------------------- Tasks --------------------
+    match /tasks/{taskId} {
+      allow read, write: if isStaff();
+      allow delete: if isAdmin();
+    }
+
+    // -------------------- Orders (generic) --------------------
+    match /orders/{orderId} {
+      allow read, write: if request.auth != null;
+      allow delete: if isAdmin();
+    }
+
+    // -------------------- Client Orders (público para clientes) --------------------
+    match /clientOrders/{orderId} {
+      // Permitir creación pública para clientes no autenticados
+      allow create: if true;
+      // Lectura y actualización solo para staff autenticado
+      allow read, update: if isStaff();
+      allow delete: if isAdmin();
+    }
+
+    // -------------------- Table Orders --------------------
+    match /tableOrders/{orderId} {
+      allow read, write: if isStaff();
+      allow delete: if isAdmin();
+    }
+
+    // -------------------- Breakfast Orders --------------------
+    match /breakfastOrders/{orderId} {
+      allow read, write: if request.auth != null;
+      allow delete: if isAdmin();
+    }
+
+    // -------------------- Delivery Breakfast Orders --------------------
+    match /deliveryBreakfastOrders/{orderId} {
+      allow read, write: if request.auth != null;
+      allow delete: if isAdmin();
+    }
+
+    // -------------------- Payments --------------------
+    match /payments/{paymentId} {
+      allow read, write: if isStaff();
+      allow delete: if isAdmin();
+    }
+
+    // -------------------- PaymentsByDay --------------------
+    match /paymentsByDay/{dayId} {
+      allow read, write: if isStaff();
+      allow delete: if isAdmin();
+    }
+
+    // -------------------- Settings (lectura pública segura) --------------------
+    // Permitir lectura pública de configuración no sensible (frontend depende para mostrar menú/horarios)
+    // IMPORTANTE: Asegurarse de NO almacenar aquí datos sensibles (tokens, claves, info privada).
+    match /settings/{document=**} {
+      allow read: if true; // público
+      allow write: if isAuthenticated() && isAdmin();
+    }
+
+    // -------------------- Catálogo / Menú público --------------------
+    // Colecciones usadas para construir el menú que deben ser visibles sin login.
+    // Lecturas públicas; escrituras restringidas a admin (y en algunos casos mesero si se requiere operar rápido).
+    // Ajusta esta lista si agregas nuevas colecciones de catálogo.
+    // Almuerzos
+    match /sides/{docId} { allow read: if true; allow write: if isAdmin(); }
+    match /additions/{docId} { allow read: if true; allow write: if isAdmin(); }
+    match /dailyProteins/{docId} {
+      // Lectura pública para mostrar disponibilidad; escritura: admin y mesero
+      allow read: if true;
+      allow create, update: if isStaff();
+      allow delete: if isAdmin();
+    }
+    // Desayunos
+    match /breakfastAdditions/{docId} { allow read: if true; allow write: if isAdmin(); }
+    match /breakfastProteins/{docId} { allow read: if true; allow write: if isAdmin(); }
+    match /breakfastTypes/{docId} { allow read: if true; allow write: if isAdmin(); }
+    match /breakfastEggs/{docId} { allow read: if true; allow write: if isAdmin(); }
+    match /breakfastBroths/{docId} { allow read: if true; allow write: if isAdmin(); }
+    match /breakfastRiceBread/{docId} { allow read: if true; allow write: if isAdmin(); }
+    match /breakfastDrinks/{docId} { allow read: if true; allow write: if isAdmin(); }
+
+    // Mesas visibles públicamente
+    match /tables/{docId} { allow read: if true; allow write: if isAdmin(); }
+
+    // -------------------- Fallback (catch-all) --------------------
+    match /{collection}/{document=**} {
+      allow read: if true; // público (temporal)
+      allow write: if isAdmin();
+    }
+  }
+}

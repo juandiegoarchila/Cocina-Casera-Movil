@@ -1,0 +1,14 @@
+{
+  "name": "test-data-generator",
+  "version": "1.0.0",
+  "description": "Script para generar y limpiar datos de prueba para el dashboard de restaurante",
+  "main": "createTestData.js",
+  "scripts": {
+    "create": "node createTestData.js",
+    "clean": "node cleanTestData.js",
+    "fresh": "node cleanTestData.js && node createTestData.js"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.0.0"
+  }
+}
