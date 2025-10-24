@@ -423,51 +423,152 @@ const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
     // Generar recibo de texto para impresora térmica
     const generateThermalReceipt = () => {
       let receipt = '';
-      receipt += '        Cocina Casera\n';
+      
+      // Comandos ESC/POS para centrar texto y configurar impresión
+      const ESC = '\x1B';
+      const GS = '\x1D';
+      
+      // Inicializar impresora
+      receipt += ESC + '@'; // Inicializar
+      
+      // El logo se imprime como imagen separadamente, así que empezamos con info
+      receipt += ESC + 'a' + '\x01'; // Centrar texto
+      receipt += ESC + '!' + '\x08'; // Texto en negrita
+      receipt += 'COCINA CASERA\n';
+      receipt += ESC + '!' + '\x00'; // Texto normal
+      receipt += '(Uso interno - No es factura DIAN)\n';
+      receipt += '\n';
+      
+      // Línea divisoria
+      receipt += ESC + 'a' + '\x00'; // Alinear izquierda
       receipt += '================================\n';
+      
+      // Información del pedido
       receipt += `TIPO: ${tipoLabel}\n`;
       if (tableNumber) receipt += `MESA: ${tableNumber}\n`;
       receipt += `FECHA: ${fecha}\n`;
+      receipt += `ID: ${id.substring(0, 8)}\n`;
       if (note) receipt += `NOTA: ${note}\n`;
       receipt += '================================\n';
+      
+      // Items del pedido
+      receipt += ESC + '!' + '\x08'; // Texto en negrita
       receipt += 'ITEMS:\n';
+      receipt += ESC + '!' + '\x00'; // Texto normal
       
       items.forEach(item => {
         const qty = Number(item.quantity || 0);
         const unit = Number(item.price || 0);
         const lineTotal = qty * unit;
+        
+        // Nombre del item (línea completa)
         receipt += `${item.name}\n`;
-        receipt += `  ${qty}x ${formatPrice(unit).replace('$', '').replace('.', ',')} = ${formatPrice(lineTotal).replace('$', '').replace('.', ',')}\n`;
+        
+        // Cantidad, precio unitario y total (alineado)
+        const qtyText = `${qty}x`;
+        const unitText = `$${unit.toLocaleString('es-CO')}`;
+        const totalText = `$${lineTotal.toLocaleString('es-CO')}`;
+        
+        // Crear línea con espaciado
+        const lineContent = `  ${qtyText} ${unitText}`;
+        const spaces = ' '.repeat(Math.max(1, 32 - lineContent.length - totalText.length));
+        receipt += `${lineContent}${spaces}${totalText}\n`;
       });
       
       receipt += '================================\n';
-      receipt += `TOTAL: ${formatPrice(total).replace('$', '').replace('.', ',')}\n`;
+      
+      // Totales
+      receipt += ESC + '!' + '\x08'; // Texto en negrita
+      const totalText = `TOTAL: $${total.toLocaleString('es-CO')}`;
+      receipt += totalText + '\n';
+      receipt += ESC + '!' + '\x00'; // Texto normal
+      
+      // Información de pago
       receipt += `PAGO: ${paymentMethod.charAt(0).toUpperCase() + paymentMethod.slice(1)}\n`;
       if (paymentMethod === 'efectivo') {
-        receipt += `RECIBIDO: ${formatPrice(cashReceived || 0).replace('$', '').replace('.', ',')}\n`;
-        receipt += `VUELTOS: ${formatPrice(changeGiven || 0).replace('$', '').replace('.', ',')}\n`;
+        receipt += `RECIBIDO: $${(cashReceived || 0).toLocaleString('es-CO')}\n`;
+        receipt += `VUELTOS: $${(changeGiven || 0).toLocaleString('es-CO')}\n`;
       }
+      
       receipt += '================================\n';
-      receipt += '    ¡Gracias por su compra!\n';
+      receipt += ESC + 'a' + '\x01'; // Centrar texto
+      receipt += ESC + '!' + '\x08'; // Texto en negrita
+      receipt += '¡Gracias por su compra!\n';
+      receipt += ESC + '!' + '\x00'; // Texto normal
       receipt += '\n';
-      receipt += '  Te esperamos mañana con un\n';
-      receipt += '      nuevo menu.\n';
-      receipt += '  Escribenos al 301 6476916\n';
-      receipt += '    Calle 133#126c-09\n';
+      receipt += 'Te esperamos mañana con un\n';
+      receipt += 'nuevo menu.\n';
+      receipt += 'Escribenos al 301 6476916\n';
+      receipt += 'Calle 133#126c-09\n';
+      receipt += '\n';
+      
+      // QR Code para WhatsApp (si la impresora lo soporta)
+      receipt += 'Escanea nuestro QR para\n';
+      receipt += 'recibir el menu diario:\n';
+      receipt += '\n';
+      
+      // Generar QR code simple (algunos comandos ESC/POS)
+      receipt += GS + '(k' + '\x04' + '\x00' + '\x31' + '\x41' + '\x32' + '\x00'; // QR setup
+      receipt += GS + '(k' + '\x03' + '\x00' + '\x31' + '\x43' + '\x08'; // QR size
+      receipt += GS + '(k' + '\x03' + '\x00' + '\x31' + '\x45' + '\x30'; // QR error correction
+      
+      // Datos del QR (WhatsApp)
+      const qrData = 'https://wa.me/573016476916?text=Hola%20quiero%20el%20menu';
+      const qrLength = qrData.length + 3;
+      const qrLenLow = qrLength % 256;
+      const qrLenHigh = Math.floor(qrLength / 256);
+      receipt += GS + '(k' + String.fromCharCode(qrLenLow, qrLenHigh) + '\x00' + '\x31' + '\x50' + '\x30' + qrData;
+      receipt += GS + '(k' + '\x03' + '\x00' + '\x31' + '\x51' + '\x30'; // Imprimir QR
+      
       receipt += '\n\n\n';
       
+      // Cortar papel
+      receipt += GS + 'V' + '\x41' + '\x03'; // Corte parcial
+      
       return receipt;
+    };
+
+    // Función para convertir imagen a base64
+    const getLogoBase64 = async () => {
+      try {
+        const response = await fetch('/logo.png');
+        const blob = await response.blob();
+        return new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const base64 = reader.result.split(',')[1]; // Remover prefijo data:image/png;base64,
+            resolve(base64);
+          };
+          reader.readAsDataURL(blob);
+        });
+      } catch (error) {
+        console.warn('No se pudo cargar el logo:', error);
+        return null;
+      }
     };
 
     // Intentar impresión nativa primero (si está configurada)
     try {
       if (printerIp && printerPort) {
         const thermalData = generateThermalReceipt();
-        await PrinterPlugin.printTCP({
-          ip: printerIp,
-          port: printerPort,
-          data: thermalData
-        });
+        const logoBase64 = await getLogoBase64();
+        
+        if (logoBase64) {
+          // Usar la nueva función con imagen
+          await PrinterPlugin.printWithImage({
+            ip: printerIp,
+            port: printerPort,
+            data: thermalData,
+            imageBase64: logoBase64
+          });
+        } else {
+          // Usar función básica sin imagen
+          await PrinterPlugin.printTCP({
+            ip: printerIp,
+            port: printerPort,
+            data: thermalData
+          });
+        }
         console.log('✅ Recibo impreso en impresora térmica');
       }
     } catch (error) {
