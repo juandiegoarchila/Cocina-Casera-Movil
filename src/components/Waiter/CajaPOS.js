@@ -5,6 +5,7 @@ import { db } from '../../config/firebase';
 import { collection, onSnapshot, addDoc, serverTimestamp } from 'firebase/firestore';
 import { CurrencyDollarIcon, PlusCircleIcon, PencilIcon, XCircleIcon } from '@heroicons/react/24/outline';
 import { useAuth } from '../Auth/AuthProvider';
+import PrinterPlugin from '../../plugins/PrinterPlugin.ts';
 
 const formatPrice = (v) => new Intl.NumberFormat('es-CO',{ style:'currency', currency:'COP', maximumFractionDigits:0 }).format(v||0);
 
@@ -21,6 +22,28 @@ const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
   const [posCalculatedChange, setPosCalculatedChange] = useState(0);
   const [posNote, setPosNote] = useState('');
   const [posStage, setPosStage] = useState('select'); // 'select' | 'pay'
+
+  // Estados para impresora nativa
+  const [showPrinterConfig, setShowPrinterConfig] = useState(false);
+  const [printerModel, setPrinterModel] = useState('epson-tm-t20ii-ethernet');
+  const [printerIp, setPrinterIp] = useState('192.168.1.100');
+  const [printerPort, setPrinterPort] = useState(9100);
+  const [printerTestResults, setPrinterTestResults] = useState([]);
+  const [isDetecting, setIsDetecting] = useState(false);
+
+  // Modelos de impresoras disponibles
+  const printerModels = [
+    { id: 'epson-tm-t20ii-ethernet', name: 'Epson TM-T20II (Ethernet)', port: 9100 },
+    { id: 'epson-tm-t88v', name: 'Epson TM-T88V', port: 9100 },
+    { id: 'epson-tm-t82', name: 'Epson TM-T82', port: 9100 },
+    { id: 'star-tsp143', name: 'Star TSP143', port: 9100 },
+    { id: 'star-tsp650', name: 'Star TSP650', port: 9100 },
+    { id: 'bixolon-srp-350', name: 'Bixolon SRP-350', port: 9100 },
+    { id: 'citizen-ct-s310a', name: 'Citizen CT-S310A', port: 9100 },
+    { id: 'zebra-zd220', name: 'Zebra ZD220', port: 9100 },
+    { id: 'autodetect', name: '🔍 Autodetectar Modelo', port: 9100 },
+    { id: 'manual', name: '⚙️ Configuración Manual', port: 9100 }
+  ];
 
   // Editor de artículos
   const [showItemEditor, setShowItemEditor] = useState(false);
@@ -99,6 +122,162 @@ const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
   const updateCartItemQuantity = (id, qty) => setCartItems(prev => prev.filter(ci => (ci.id===id && qty<=0)? false : true).map(ci => ci.id===id ? { ...ci, quantity: qty } : ci));
   const removeCartItem = (id) => setCartItems(prev => prev.filter(ci=>ci.id!==id));
   const resetCart = () => { setCartItems([]); setPosCashAmount(''); setPosCalculatedChange(0); setPosNote(''); setPosStage('select'); };
+
+  // Funciones de impresora nativa
+  const addTestResult = (message) => {
+    const timestamp = new Date().toLocaleTimeString('es-CO', { hour12: true });
+    setPrinterTestResults(prev => [...prev, `${timestamp}: ${message}`]);
+  };
+
+  const clearTestResults = () => setPrinterTestResults([]);
+
+  const handlePrinterModelChange = (modelId) => {
+    setPrinterModel(modelId);
+    const model = printerModels.find(m => m.id === modelId);
+    if (model && model.port !== 9100) {
+      setPrinterPort(model.port);
+    }
+  };
+
+  const testPrinterConnection = async () => {
+    addTestResult('Iniciando conexión universal...');
+    addTestResult(`Probando conexión TCP nativa a ${printerIp}:${printerPort}`);
+    
+    try {
+      const result = await PrinterPlugin.testConnection({
+        ip: printerIp,
+        port: printerPort
+      });
+      
+      if (result.success) {
+        addTestResult('Conectado vía TCP nativo (como Loyverse)');
+        setSuccess('✅ Conexión exitosa con impresora');
+      } else {
+        addTestResult(`Error de conexión nativa: ${result.error}`);
+        setError('❌ No se pudo conectar a la impresora');
+      }
+    } catch (error) {
+      addTestResult(`Error de conexión nativa: Error: ${error.message}`);
+      setError('❌ Error al probar conexión');
+    }
+  };
+
+  const testPrint = async () => {
+    addTestResult('Iniciando impresión universal...');
+    addTestResult('Iniciando conexión universal...');
+    addTestResult(`Probando conexión TCP nativa a ${printerIp}:${printerPort}`);
+    
+    try {
+      // Generar datos de prueba para impresión
+      const testData = `
+        Cocina Casera
+        ================================
+        PRUEBA DE IMPRESIÓN
+        ================================
+        Fecha: ${new Date().toLocaleString('es-CO')}
+        IP: ${printerIp}:${printerPort}
+        Modelo: ${printerModels.find(m => m.id === printerModel)?.name || 'Manual'}
+        ================================
+        Esta es una prueba de impresión
+        desde el plugin nativo de
+        Capacitor para Android.
+        ================================
+        ¡Todo funciona correctamente!
+        
+        
+        
+      `;
+      
+      addTestResult('Conectado vía TCP nativo (como Loyverse)');
+      addTestResult('Enviando vía TCP nativo...');
+      
+      const result = await PrinterPlugin.printTCP({
+        ip: printerIp,
+        port: printerPort,
+        data: testData
+      });
+      
+      if (result.success) {
+        addTestResult('Impresión TCP nativa exitosa');
+        setSuccess('✅ Impresión de prueba exitosa');
+      } else {
+        addTestResult(`Error de impresión: ${result.error}`);
+        setError('❌ Error en impresión de prueba');
+      }
+    } catch (error) {
+      addTestResult(`Error de impresión: Error: ${error.message}`);
+      setError('❌ Error al imprimir');
+    }
+  };
+
+  const testCashDrawer = async () => {
+    addTestResult('Abriendo caja registradora...');
+    addTestResult('Iniciando conexión universal...');
+    addTestResult(`Probando conexión TCP nativa a ${printerIp}:${printerPort}`);
+    
+    try {
+      addTestResult('Conectado vía TCP nativo (como Loyverse)');
+      addTestResult('Enviando comando de apertura vía TCP nativo...');
+      
+      const result = await PrinterPlugin.openCashDrawer({
+        ip: printerIp,
+        port: printerPort
+      });
+      
+      if (result.success) {
+        addTestResult('Caja abierta exitosamente');
+        addTestResult('Prueba de caja exitosa');
+        setSuccess('✅ Caja registradora abierta');
+      } else {
+        addTestResult(`Error al abrir caja: ${result.error}`);
+        addTestResult('No se pudo conectar para abrir caja');
+        setError('❌ Error al abrir caja registradora');
+      }
+    } catch (error) {
+      addTestResult(`Error al abrir caja: Error: ${error.message}`);
+      addTestResult('No se pudo conectar para abrir caja');
+      setError('❌ Error al abrir caja registradora');
+    }
+  };
+
+  const autodetectPrinter = async () => {
+    setIsDetecting(true);
+    addTestResult('Iniciando autodetección...');
+    addTestResult('Buscando impresoras en red local...');
+    
+    try {
+      const result = await PrinterPlugin.autodetectPrinter({
+        baseIp: '192.168.1',
+        startRange: 100,
+        endRange: 110,
+        port: printerPort
+      });
+      
+      if (result.success) {
+        setPrinterIp(result.ip);
+        addTestResult(`Impresora encontrada en ${result.ip}:${result.port}`);
+        setSuccess(`✅ Impresora encontrada: ${result.ip}`);
+      } else {
+        addTestResult(result.error || 'No se encontraron impresoras');
+        setError('❌ No se encontraron impresoras');
+      }
+    } catch (error) {
+      addTestResult(`Error en autodetección: ${error.message}`);
+      setError('❌ Error en autodetección');
+    } finally {
+      setIsDetecting(false);
+    }
+  };
+
+  const runCompleteTest = async () => {
+    addTestResult('Iniciando prueba completa...');
+    await testPrinterConnection();
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    await testPrint();
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    await testCashDrawer();
+  };
+
   // Sugerencias híbridas escaladas: para totales grandes agregar 60k,70k,80k...
   const quickCashSuggestions = useMemo(()=>{
     const t = cartTotal;
@@ -233,22 +412,79 @@ const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
     }catch(err){ setError('Error registrando venta: '+err.message); }
   };
 
-  // Helper para imprimir recibo
+  // Helper para imprimir recibo (híbrido: web + nativo)
   const printReceipt = async ({ id, date, items, total, paymentMethod, cashReceived, changeGiven, note, orderType, orderTypeNormalized, serviceType, tableNumber, takeaway }) => {
+    const fecha = date.toLocaleString('es-CO');
+    const kind = (orderTypeNormalized?.split('_')[0] || orderType || '').toLowerCase();
+    const svc = (orderTypeNormalized?.split('_')[1] || serviceType || (tableNumber ? 'mesa' : (takeaway ? 'llevar' : ''))).toLowerCase();
+    const cap = (s) => s ? s.charAt(0).toUpperCase()+s.slice(1) : '';
+    const tipoLabel = `${cap(kind)} ${svc ? cap(svc) : ''}`.trim();
+
+    // Generar recibo de texto para impresora térmica
+    const generateThermalReceipt = () => {
+      let receipt = '';
+      receipt += '        Cocina Casera\n';
+      receipt += '================================\n';
+      receipt += `TIPO: ${tipoLabel}\n`;
+      if (tableNumber) receipt += `MESA: ${tableNumber}\n`;
+      receipt += `FECHA: ${fecha}\n`;
+      if (note) receipt += `NOTA: ${note}\n`;
+      receipt += '================================\n';
+      receipt += 'ITEMS:\n';
+      
+      items.forEach(item => {
+        const qty = Number(item.quantity || 0);
+        const unit = Number(item.price || 0);
+        const lineTotal = qty * unit;
+        receipt += `${item.name}\n`;
+        receipt += `  ${qty}x ${formatPrice(unit).replace('$', '').replace('.', ',')} = ${formatPrice(lineTotal).replace('$', '').replace('.', ',')}\n`;
+      });
+      
+      receipt += '================================\n';
+      receipt += `TOTAL: ${formatPrice(total).replace('$', '').replace('.', ',')}\n`;
+      receipt += `PAGO: ${paymentMethod.charAt(0).toUpperCase() + paymentMethod.slice(1)}\n`;
+      if (paymentMethod === 'efectivo') {
+        receipt += `RECIBIDO: ${formatPrice(cashReceived || 0).replace('$', '').replace('.', ',')}\n`;
+        receipt += `VUELTOS: ${formatPrice(changeGiven || 0).replace('$', '').replace('.', ',')}\n`;
+      }
+      receipt += '================================\n';
+      receipt += '    ¡Gracias por su compra!\n';
+      receipt += '\n';
+      receipt += '  Te esperamos mañana con un\n';
+      receipt += '      nuevo menu.\n';
+      receipt += '  Escribenos al 301 6476916\n';
+      receipt += '    Calle 133#126c-09\n';
+      receipt += '\n\n\n';
+      
+      return receipt;
+    };
+
+    // Intentar impresión nativa primero (si está configurada)
+    try {
+      if (printerIp && printerPort) {
+        const thermalData = generateThermalReceipt();
+        await PrinterPlugin.printTCP({
+          ip: printerIp,
+          port: printerPort,
+          data: thermalData
+        });
+        console.log('✅ Recibo impreso en impresora térmica');
+      }
+    } catch (error) {
+      console.warn('⚠️ Fallo impresión térmica, usando método web:', error);
+    }
+
+    // Impresión web como respaldo (siempre)
     if (typeof window === 'undefined') return;
     const win = window.open('', 'PRINT', 'height=650,width=420');
     if(!win) return;
-  const fecha = date.toLocaleString('es-CO');
-  // Construir etiqueta combinada según normalización
-  const kind = (orderTypeNormalized?.split('_')[0] || orderType || '').toLowerCase(); // desayuno|almuerzo
-  const svc = (orderTypeNormalized?.split('_')[1] || serviceType || (tableNumber ? 'mesa' : (takeaway ? 'llevar' : ''))).toLowerCase(); // mesa|llevar
-  const cap = (s) => s ? s.charAt(0).toUpperCase()+s.slice(1) : '';
-  const tipoLabel = `${cap(kind)} ${svc ? cap(svc) : ''}`.trim();
+    
     // Generar QR canal WhatsApp
     let qrDataUrl = '';
     try {
       qrDataUrl = await QRCode.toDataURL('https://wa.me/573016476916?text=Hola%20quiero%20el%20menú');
     } catch(err) { /* ignorar */ }
+    
     // Construir items html mostrando total por línea a la derecha
     const itemsHtml = items.map(it => {
       const qty = Number(it.quantity||0);
@@ -528,8 +764,12 @@ const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
                 <div className="text-base text-gray-300 font-semibold tracking-wide">TOTAL</div>
                 <div className="text-2xl font-extrabold text-green-400">{formatPrice(cartTotal)}</div>
               </div>
-              <div className="flex gap-2">
+              <div className="flex gap-2 mb-2">
                 <button onClick={resetCart} className="flex-1 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded text-sm">Limpiar</button>
+                <button onClick={() => setShowPrinterConfig(true)} className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm">Impresora</button>
+                <button onClick={testCashDrawer} className="px-3 py-2 bg-yellow-600 hover:bg-yellow-700 text-white rounded text-sm">Abrir Caja</button>
+              </div>
+              <div className="flex gap-2">
                 <button onClick={handleProcessPosSale} className="flex-1 py-2 bg-green-600 hover:bg-green-700 text-white rounded text-sm font-semibold" disabled={cartItems.length===0}>Cobrar</button>
               </div>
             </>
@@ -683,6 +923,141 @@ const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
                 <button onClick={()=>setShowItemEditor(false)} className="flex-1 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded text-sm">Cancelar</button>
                 {editingItem && <button onClick={()=>setItemActive(a=>!a)} className="px-3 py-2 bg-yellow-600 hover:bg-yellow-700 text-white rounded text-sm">{itemActive? 'Desactivar':'Activar'}</button>}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Configuración de Impresora */}
+      {showPrinterConfig && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-800 rounded-lg p-6 w-full max-w-md max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-bold text-white">Configuración de Impresora</h3>
+              <button onClick={() => setShowPrinterConfig(false)} className="text-gray-400 hover:text-white">
+                <XCircleIcon className="w-6 h-6" />
+              </button>
+            </div>
+
+            {/* Selector de Modelo */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-300 mb-2">Modelo de Impresora:</label>
+              <select
+                value={printerModel}
+                onChange={(e) => handlePrinterModelChange(e.target.value)}
+                className="w-full px-3 py-2 bg-gray-700 text-white rounded border border-gray-600 focus:border-blue-500"
+              >
+                {printerModels.map(model => (
+                  <option key={model.id} value={model.id}>{model.name}</option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-400 mt-1">Selecciona tu modelo para configuración automática</p>
+            </div>
+
+            {/* Configuración IP y Puerto */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-300 mb-2">Dirección IP de la impresora:</label>
+              <input
+                type="text"
+                value={printerIp}
+                onChange={(e) => setPrinterIp(e.target.value)}
+                placeholder="192.168.1.100"
+                className="w-full px-3 py-2 bg-gray-700 text-white rounded border border-gray-600 focus:border-blue-500"
+              />
+            </div>
+
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-gray-300 mb-2">Puerto:</label>
+              <input
+                type="number"
+                value={printerPort}
+                onChange={(e) => setPrinterPort(Number(e.target.value))}
+                placeholder="9100"
+                className="w-full px-3 py-2 bg-gray-700 text-white rounded border border-gray-600 focus:border-blue-500"
+              />
+            </div>
+
+            {/* Botones de Prueba */}
+            <div className="grid grid-cols-3 gap-2 mb-4">
+              <button
+                onClick={testPrint}
+                className="py-2 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-medium"
+              >
+                IMPRESIÓN DE PRUEBA
+              </button>
+              <button
+                onClick={runCompleteTest}
+                className="py-2 px-3 bg-green-600 hover:bg-green-700 text-white rounded text-sm font-medium"
+              >
+                PRUEBA
+              </button>
+              <button
+                onClick={testCashDrawer}
+                className="py-2 px-3 bg-yellow-600 hover:bg-yellow-700 text-white rounded text-sm font-medium"
+              >
+                ABRIR CAJA
+              </button>
+            </div>
+
+            {/* Autodetección */}
+            {printerModel === 'autodetect' && (
+              <div className="mb-4">
+                <button
+                  onClick={autodetectPrinter}
+                  disabled={isDetecting}
+                  className="w-full py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-gray-600 text-white rounded font-medium"
+                >
+                  {isDetecting ? 'Detectando...' : '🔍 Buscar Impresoras en Red'}
+                </button>
+              </div>
+            )}
+
+            {/* Log de Diagnóstico */}
+            <div className="mb-4">
+              <div className="flex items-center justify-between mb-2">
+                <label className="block text-sm font-medium text-gray-300">Log de diagnóstico:</label>
+                <button
+                  onClick={clearTestResults}
+                  className="text-xs text-blue-400 hover:text-blue-300"
+                >
+                  Limpiar Log
+                </button>
+              </div>
+              <div className="bg-gray-900 border border-gray-600 rounded p-3 h-32 overflow-y-auto text-xs font-mono text-gray-300">
+                {printerTestResults.length === 0 ? (
+                  <p className="text-gray-500">El log de diagnóstico aparecerá aquí...</p>
+                ) : (
+                  printerTestResults.map((result, index) => (
+                    <p key={index} className="mb-1">{result}</p>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* Botones de Acción */}
+            <div className="flex gap-3">
+              <button
+                onClick={testPrinterConnection}
+                className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded font-medium"
+              >
+                Probar Conexión
+              </button>
+              <button
+                onClick={() => setShowPrinterConfig(false)}
+                className="flex-1 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded"
+              >
+                Cerrar
+              </button>
+            </div>
+
+            {/* Aviso de Configuración */}
+            <div className="mt-4 p-3 bg-yellow-600/20 border border-yellow-500/30 rounded">
+              <h4 className="text-sm font-medium text-yellow-300 mb-1">⚠️ Configuración Previa Obligatoria</h4>
+              <p className="text-xs text-yellow-200">
+                Sin configurar IP y modelo → Plugin falla.<br />
+                Siempre configura antes de usar la caja.<br />
+                Esta configuración se aplica automáticamente a todos los botones de impresión en la caja.
+              </p>
             </div>
           </div>
         </div>
