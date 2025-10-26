@@ -100,6 +100,26 @@ const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
   const updateCartItemQuantity = (id, qty) => setCartItems(prev => prev.filter(ci => (ci.id===id && qty<=0)? false : true).map(ci => ci.id===id ? { ...ci, quantity: qty } : ci));
   const removeCartItem = (id) => setCartItems(prev => prev.filter(ci=>ci.id!==id));
   const resetCart = () => { setCartItems([]); setPosCashAmount(''); setPosCalculatedChange(0); setPosNote(''); setPosStage('select'); };
+  
+  // Estado para mantener información de la venta completada
+  const [completedSale, setCompletedSale] = useState(null);
+  
+  // Función para nueva venta
+  const handleNewSale = () => {
+    setCompletedSale(null);
+    resetCart();
+  };
+  
+  // Función para reimprimir recibo
+  const handleReprintReceipt = async () => {
+    if (!completedSale) return;
+    try {
+      await printReceipt(completedSale);
+      setSuccess('✅ Recibo reimpreso');
+    } catch (err) {
+      setError('Error al reimprimir: ' + err.message);
+    }
+  };
   // Sugerencias híbridas escaladas: para totales grandes agregar 60k,70k,80k...
   const quickCashSuggestions = useMemo(()=>{
     const t = cartTotal;
@@ -136,18 +156,26 @@ const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
     return arr.slice(0, limit);
   },[cartTotal]);
 
-  // Desglose de cambio sugerido (greedy) para COP
+  // Desglose de cambio sugerido (greedy) para COP - incluye monedas
   const changeBreakdown = useMemo(()=>{
     if (posPaymentMethod !== 'efectivo') return [];
     const change = posCalculatedChange;
     if (change <= 0) return [];
-    const denoms = [50000,20000,10000,5000,2000,1000];
+    // Denominaciones completas: billetes + monedas colombianas
+    const denoms = [50000, 20000, 10000, 5000, 2000, 1000, 500, 200, 100, 50];
     let remaining = change;
     const parts = [];
     for (const d of denoms){
       if (remaining <= 0) break;
       const q = Math.floor(remaining / d);
-      if (q>0){ parts.push({ d, q }); remaining -= q*d; }
+      if (q>0){ 
+        parts.push({ 
+          d, 
+          q, 
+          type: d >= 1000 ? 'billete' : 'moneda' // Distinguir tipo para mejor presentación
+        }); 
+        remaining -= q*d; 
+      }
     }
     return parts;
   },[posCalculatedChange,posPaymentMethod]);
@@ -209,28 +237,34 @@ const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
       const collectionName = (inferredMeal==='desayuno') ? 'breakfastOrders' : 'tableOrders';
       payload.__collection = collectionName; // pista para normalizadores
       const docRef = await addDoc(collection(db, collectionName), payload);
+      
+      // Preparar datos para impresión y estado completado
+      const receiptData = {
+        id: docRef.id,
+        date: new Date(),
+        items: cartItems,
+        total: cartTotal,
+        paymentMethod: posPaymentMethod,
+        cashReceived,
+        changeGiven,
+        changeBreakdown,
+        note: posNote,
+        orderType: payload.orderType,
+        orderTypeNormalized: payload.orderTypeNormalized,
+        serviceType: payload.serviceType,
+        tableNumber: payload.tableNumber,
+        takeaway: payload.takeaway,
+      };
+      
       // Imprimir recibo (solo en cliente)
       try {
-        printReceipt({
-          id: docRef.id,
-          date: new Date(),
-          items: cartItems,
-            // Totales
-          total: cartTotal,
-          paymentMethod: posPaymentMethod,
-          cashReceived,
-          changeGiven,
-          changeBreakdown,
-          note: posNote,
-          orderType: payload.orderType,
-          orderTypeNormalized: payload.orderTypeNormalized,
-          serviceType: payload.serviceType,
-          tableNumber: payload.tableNumber,
-          takeaway: payload.takeaway,
-        });
+        await printReceipt(receiptData);
       } catch(printErr){ /* silenciar errores de impresión */ }
+      
+      // Guardar información de la venta completada y cambiar a estado completed
+      setCompletedSale(receiptData);
+      setPosStage('completed');
       setSuccess('✅ Venta registrada');
-      resetCart();
     }catch(err){ setError('Error registrando venta: '+err.message); }
   };
 
@@ -565,8 +599,9 @@ const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
   return (
   <div className="w-full mx-auto px-3 sm:px-6 py-4 lg:py-3 lg:h-[calc(100vh-5rem)] lg:overflow-hidden">
 
-  <div className={`grid grid-cols-1 ${posStage==='pay' ? 'lg:grid-cols-[440px_1fr]' : 'lg:grid-cols-3'} gap-4 items-start h-full`}>
-        {/* Catálogo (columna izquierda 2/3) */}
+  <div className={`grid grid-cols-1 ${posStage==='completed' ? 'lg:grid-cols-1' : posStage==='pay' ? 'lg:grid-cols-[440px_1fr]' : 'lg:grid-cols-3'} gap-4 items-start h-full`}>
+        {/* Catálogo (columna izquierda 2/3) - Solo mostrar si NO está completado */}
+        {posStage !== 'completed' && (
   <div className={`${posStage==='select' ? 'lg:col-span-2' : 'lg:w-[440px]'} flex flex-col h-full relative min-w-0 min-h-0`}>
           {posStage==='select' ? (
             <>
@@ -668,9 +703,10 @@ const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
             </div>
           )}
         </div>
+        )}
 
         {/* Resumen / Pago (panel lateral derecho) */}
-  <div className={`${theme==='dark' ? 'bg-gray-800':'bg-white'} rounded-xl p-3 shadow-lg flex flex-col lg:sticky lg:top-0 self-start h-full lg:h-full min-h-0 ${posStage==='pay' ? 'min-w-0' : ''}`}>
+  <div className={`${theme==='dark' ? 'bg-gray-800':'bg-white'} rounded-xl p-3 shadow-lg flex flex-col lg:sticky lg:top-0 self-start h-full lg:h-full min-h-0 ${posStage==='completed' ? 'w-full max-w-2xl mx-auto' : posStage==='pay' ? 'min-w-0' : ''}`}>
           {posStage==='select' ? (
             <>
               <h3 className="text-lg font-semibold text-gray-100 mb-3">Resumen</h3>
@@ -709,7 +745,7 @@ const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
                 <button onClick={handleProcessPosSale} className="flex-1 py-2 bg-green-600 hover:bg-green-700 text-white rounded text-sm font-semibold" disabled={cartItems.length===0}>Cobrar</button>
               </div>
             </>
-          ) : (
+          ) : posStage==='pay' ? (
             // Panel de Pago (nuevo diseño)
             <>
               <div className="flex-1 min-h-0 overflow-y-auto pr-1 custom-scrollbar">
@@ -776,6 +812,78 @@ const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
                 <div className="flex gap-2 pt-4">
                   <button onClick={()=>setPosStage('select')} className="flex-1 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded text-sm">Volver</button>
                   <button onClick={handleProcessPosSale} className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm font-semibold" disabled={cartItems.length===0}>Cobrar</button>
+                </div>
+              </div>
+            </>
+          ) : null}
+          
+          {posStage==='completed' && (
+            // Panel de Venta Completada - solo lo esencial
+            <>
+              <div className="flex-1 min-h-0 overflow-y-auto pr-1 custom-scrollbar">
+                <div className="mb-6 text-center">
+                  <div className="inline-flex items-center gap-2 px-4 py-3 rounded-full bg-green-600/15 border border-green-500/30 text-green-300 text-base font-medium mb-4">
+                    <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                    </svg>
+                    ¡Venta Completada!
+                  </div>
+                  <div className="text-sm uppercase tracking-wide text-gray-400 font-medium mb-2">Total cobrado</div>
+                  <div className="text-4xl font-extrabold text-green-400 leading-tight mb-3">{formatPrice(completedSale?.total || 0)}</div>
+                  <div className="text-sm text-gray-300 capitalize mb-2">Pagado con {completedSale?.paymentMethod || 'N/A'}</div>
+                  
+                  {/* Mostrar efectivo recibido si aplica */}
+                  {completedSale?.paymentMethod === 'efectivo' && completedSale?.cashReceived && (
+                    <div className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-600/20 border border-blue-500/30 text-blue-300 text-sm font-medium">
+                      💵 Recibido: {formatPrice(completedSale.cashReceived)}
+                    </div>
+                  )}
+                </div>
+                
+                {/* Solo mostrar vueltas si las hay */}
+                {completedSale?.paymentMethod === 'efectivo' && completedSale?.changeGiven > 0 && (
+                  <div className="space-y-4 mb-6">
+                    <div className="text-center py-4 px-4 bg-yellow-600/20 border border-yellow-500/40 rounded-xl">
+                      <div className="text-sm text-yellow-300 font-medium mb-1">💰 Vueltas a entregar</div>
+                      <div className="text-2xl font-bold text-yellow-300">{formatPrice(completedSale.changeGiven)}</div>
+                    </div>
+                    
+                    {/* Desglose de cambio - solo si hay vueltas */}
+                    {completedSale?.changeBreakdown && completedSale.changeBreakdown.length > 0 && (
+                      <div className="bg-gray-700/30 rounded-lg p-4">
+                        <div className="text-sm text-gray-300 font-medium mb-3 text-center">💵 Desglose sugerido:</div>
+                        <div className="space-y-2">
+                          {completedSale.changeBreakdown.map((item, idx) => (
+                            <div key={idx} className="flex justify-between items-center py-2 px-3 bg-gray-600/40 rounded-lg">
+                              <span className="text-gray-200 font-medium flex items-center gap-2">
+                                {item.type === 'billete' ? '💵' : '🪙'} 
+                                {item.q}x {formatPrice(item.d)}
+                              </span>
+                              <span className="text-gray-100 font-bold">{formatPrice(item.d * item.q)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+                
+                {/* Efectivo exacto - mensaje de confirmación */}
+                {completedSale?.paymentMethod === 'efectivo' && completedSale?.changeGiven === 0 && (
+                  <div className="mb-6 text-center py-4 px-4 bg-emerald-600/20 border border-emerald-500/40 rounded-xl">
+                    <div className="text-emerald-300 font-medium">✅ Efectivo exacto - Sin vueltas</div>
+                  </div>
+                )}
+              </div>
+              
+              <div className="mt-auto pt-4 border-t border-gray-700">
+                <div className="flex gap-3 pt-4">
+                  <button onClick={handleReprintReceipt} className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-semibold transition-colors">
+                    🧾 Reimprimir Recibo
+                  </button>
+                  <button onClick={handleNewSale} className="flex-1 py-3 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-semibold transition-colors">
+                    🆕 Nueva Venta
+                  </button>
                 </div>
               </div>
             </>
