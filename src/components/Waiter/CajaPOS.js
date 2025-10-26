@@ -114,7 +114,7 @@ const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
   const handleReprintReceipt = async () => {
     if (!completedSale) return;
     try {
-      await printReceipt(completedSale);
+      await printReceipt(completedSale, false); // false = NO abrir caja registradora
       setSuccess('✅ Recibo reimpreso');
     } catch (err) {
       setError('Error al reimprimir: ' + err.message);
@@ -256,9 +256,9 @@ const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
         takeaway: payload.takeaway,
       };
       
-      // Imprimir recibo (solo en cliente)
+      // Imprimir recibo (solo en cliente) - ABRIR CAJA en venta inicial
       try {
-        await printReceipt(receiptData);
+        await printReceipt(receiptData, true); // true = abrir caja registradora
       } catch(printErr){ /* silenciar errores de impresión */ }
       
       // Guardar información de la venta completada y cambiar a estado completed
@@ -269,7 +269,7 @@ const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
   };
 
   // Helper para imprimir recibo (híbrido: web + nativo)
-  const printReceipt = async ({ id, date, items, total, paymentMethod, cashReceived, changeGiven, note, orderType, orderTypeNormalized, serviceType, tableNumber, takeaway }) => {
+  const printReceipt = async ({ id, date, items, total, paymentMethod, cashReceived, changeGiven, note, orderType, orderTypeNormalized, serviceType, tableNumber, takeaway }, openCashDrawer = false) => {
     const fecha = date.toLocaleString('es-CO');
     const kind = (orderTypeNormalized?.split('_')[0] || orderType || '').toLowerCase();
     const svc = (orderTypeNormalized?.split('_')[1] || serviceType || (tableNumber ? 'mesa' : (takeaway ? 'llevar' : ''))).toLowerCase();
@@ -428,15 +428,19 @@ const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
       }
       console.log('✅ CajaPOS: Recibo impreso en impresora térmica');
       
-      // ABRIR CAJA REGISTRADORA automáticamente después de imprimir (SOLO EN CAJA POS)
-      try {
-        await PrinterPlugin.openCashDrawer({
-          ip: currentPrinterIp,
-          port: currentPrinterPort
-        });
-        console.log('✅ CajaPOS: Caja registradora abierta');
-      } catch (drawerError) {
-        console.warn('⚠️ CajaPOS: No se pudo abrir la caja:', drawerError);
+      // ABRIR CAJA REGISTRADORA solo si es venta inicial (no en reimpresiones)
+      if (openCashDrawer) {
+        try {
+          await PrinterPlugin.openCashDrawer({
+            ip: currentPrinterIp,
+            port: currentPrinterPort
+          });
+          console.log('✅ CajaPOS: Caja registradora abierta (venta inicial)');
+        } catch (drawerError) {
+          console.warn('⚠️ CajaPOS: No se pudo abrir la caja:', drawerError);
+        }
+      } else {
+        console.log('ℹ️ CajaPOS: Reimpresión - Caja no abierta');
       }
       
     } catch (error) {
