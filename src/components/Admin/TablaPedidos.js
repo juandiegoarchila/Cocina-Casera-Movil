@@ -77,6 +77,7 @@ import { calculateBreakfastPrice } from '../../utils/BreakfastLogic';
 import PaymentSplitEditor from '../common/PaymentSplitEditor';
 import { summarizePayments, sumPaymentsByMethod, defaultPaymentsForOrder } from '../../utils/payments';
 import QRCode from 'qrcode';
+import PrinterPlugin from '../../plugins/PrinterPlugin.ts';
 import { db } from '../../config/firebase';
 import { collection, onSnapshot, updateDoc, doc, getDoc, query, where, getDocs, addDoc, serverTimestamp, increment } from 'firebase/firestore';
 import {
@@ -197,50 +198,60 @@ const getExcludedSides = (meal, allSides) => {
 };
 
 // Función para imprimir recibo de domicilio (idéntica a la de InteraccionesPedidos.js)
-const handlePrintDeliveryReceipt = (order, allSides = []) => {
-  // SOLO imprime el recibo, NO abre la caja registradora
-  const win = window.open('', 'PRINT', 'height=700,width=400');
-  if (!win) return;
-  const isBreakfast = order.type === 'breakfast';
-  const pago = order.payment || order.paymentMethod || 'N/A';
-  
-  // Calcular el total correcto para desayunos
-  const totalValue = isBreakfast ? calculateCorrectBreakfastTotal(order) : order.total || 0;
-  const total = totalValue.toLocaleString('es-CO') || 'N/A';
-  
-  const tipo = isBreakfast ? 'Desayuno' : 'Almuerzo';
-  const address = (isBreakfast ? order.breakfasts?.[0]?.address : order.meals?.[0]?.address) || order.address || {};
-  const direccion = address.address || '';
-  const telefono = address.phoneNumber || '';
-  const barrio = address.neighborhood || '';
-  const detalles = address.details || '';
-  const now = new Date();
-  const fecha = now.toLocaleDateString('es-CO') + ' ' + now.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
-  
-  // Obtener la hora de entrega usando la misma lógica que en la tabla
-  const timeValue = order.meals?.[0]?.time || order.breakfasts?.[0]?.time || order.time || null;
-  let deliveryTime = '';
-  
-  // timeValue puede ser: string, {name}, Firestore Timestamp, Date, o null
-  if (typeof timeValue === 'string' && timeValue.trim()) {
-    deliveryTime = timeValue;
-  } else if (timeValue instanceof Date) {
-    deliveryTime = timeValue.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
-  } else if (timeValue && typeof timeValue === 'object') {
-    // Firestore Timestamp tiene toDate(); también aceptamos { name }
-    if (typeof timeValue.toDate === 'function') {
-      try {
-        const d = timeValue.toDate();
-        deliveryTime = d.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
-      } catch (e) {
-        deliveryTime = timeValue.name || '';
-      }
-    } else if (timeValue.name && typeof timeValue.name === 'string') {
-      deliveryTime = timeValue.name;
-    }
-  }
+const handlePrintDeliveryReceipt = async (order, allSides = []) => {
+  // Intentar imprimir de forma nativa vía PrinterPlugin (sin previsualización)
+  try {
+    const isBreakfast = order.type === 'breakfast';
+    const pago = order.payment || order.paymentMethod || 'N/A';
+    const totalValue = isBreakfast ? calculateCorrectBreakfastTotal(order) : order.total || 0;
+    const fmt = (v) => (Number(v)||0).toLocaleString('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 });
+    const total = fmt(totalValue);
+    const now = new Date();
+    const fecha = now.toLocaleDateString('es-CO') + ' ' + now.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
 
-  let resumen = '';
+    const ESC = '\x1B';
+    let receipt = '';
+    receipt += ESC + '@';
+    receipt += ESC + 'a' + '\x01';
+    receipt += ESC + '!' + '\x18';
+    receipt += 'Cocina Casera\n';
+    receipt += ESC + '!' + '\x00';
+    receipt += fecha + '\n';
+    receipt += '================================\n';
+    receipt += `Tipo: ${isBreakfast ? 'Desayuno' : 'Almuerzo'}\n`;
+    receipt += '--------------------------------\n';
+
+    // Items simplificados
+    const meals = Array.isArray(order.meals) ? order.meals : (Array.isArray(order.breakfasts) ? order.breakfasts : []);
+    meals.forEach((m) => {
+      const name = m.name || m.principle?.[0]?.name || 'Item';
+      const price = m.price || m.unitPrice || 0;
+      const qty = m.quantity || 1;
+      receipt += `${name}\n`;
+      receipt += `${qty} x ${fmt(price)}\n`;
+    });
+
+    receipt += '--------------------------------\n';
+    receipt += `Total: ${total}\n`;
+    receipt += `Pago: ${pago}\n`;
+    receipt += '\n\n';
+
+    const ip = localStorage.getItem('printerIp') || '192.168.1.100';
+    const port = parseInt(localStorage.getItem('printerPort')) || 9100;
+    try {
+      await PrinterPlugin.printTCP({ ip, port, data: receipt });
+      console.log('Recibo de domicilio impreso vía TCP', ip, port);
+    } catch (err) {
+      console.warn('Fallo impresión nativa domicilio:', err);
+      setErrorMessage && setErrorMessage('Fallo impresión nativa: ' + (err?.message || String(err)));
+    }
+    return;
+  } catch (err) {
+    console.error('Error en handlePrintDeliveryReceipt (nat):', err);
+    setErrorMessage && setErrorMessage('Error imprimiendo: ' + (err?.message || String(err)));
+    return;
+  }
+  // Nota: el código histórico de previsualización queda abajo como referencia pero no se ejecuta.
   if (!isBreakfast && Array.isArray(order.meals)) {
     resumen += `<div style='font-weight:bold;margin-bottom:4px;'>✅ Resumen del Pedido</div>`;
     resumen += `<div>🍽 ${order.meals.length} almuerzos en total</div>`;

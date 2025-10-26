@@ -11,6 +11,7 @@ import { db } from '../../config/firebase';
 import { collection, onSnapshot, updateDoc, deleteDoc, doc } from 'firebase/firestore';
 import { classNames } from '../../utils/classNames';
 import QRCode from 'qrcode';
+import PrinterPlugin from '../../plugins/PrinterPlugin.ts';
 import {
   ArrowDownTrayIcon,
   ChevronLeftIcon,
@@ -165,240 +166,79 @@ const TableOrdersAdmin = ({ theme = 'light' }) => {
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const menuRef = useRef(null);
 
-    // Función para imprimir recibo detallado
-    const handlePrintReceipt = (order) => {
-      const win = window.open('', 'PRINT', 'height=700,width=400');
-      if (!win) return;
-      const isBreakfast = order.type === 'breakfast';
-      const isPOS = Array.isArray(order.items) && order.items.length && !Array.isArray(order.breakfasts) && !Array.isArray(order.meals);
-      const table = formatValue(order.tableNumber || order.meals?.[0]?.tableNumber || order.breakfasts?.[0]?.tableNumber);
-      const pago = isPOS ? (() => {
-        const raw = (typeof order.paymentMethod === 'string' ? order.paymentMethod : order.paymentMethod?.name || '').toString().toLowerCase();
-        if (raw.includes('efect')) return 'Efectivo';
-        if (raw.includes('nequi')) return 'Nequi';
-        if (raw.includes('davi')) return 'Daviplata';
-        return order.paymentMethod?.name || order.paymentMethod || '';
-      })() : paymentMethodsOnly(order);
-      const fmt = (v) => (Number(v)||0).toLocaleString('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 });
-      const total = fmt(order.total);
-      // Para POS usamos la fecha guardada; para el resto, la actual
-      const savedDate = order.paymentDate?.toDate ? order.paymentDate.toDate() : (order.createdAt?.toDate ? order.createdAt.toDate() : (order.paymentDate || order.createdAt ? new Date(order.paymentDate || order.createdAt) : new Date()));
-      const now = new Date();
-      const fecha = (isPOS ? savedDate : now).toLocaleString('es-CO');
-      // Tipo combinado para POS
-      const cap = (s) => s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
-      const kind = (order.orderTypeNormalized?.split('_')[0] || order.orderType || (isBreakfast ? 'desayuno' : 'almuerzo')).toLowerCase();
-      const svc = (order.orderTypeNormalized?.split('_')[1] || order.serviceType || (order.tableNumber ? 'mesa' : (order.takeaway ? 'llevar' : ''))).toLowerCase();
-      const tipo = isPOS ? `${cap(kind)} ${svc ? cap(svc) : ''}`.trim() : (isBreakfast ? 'Desayuno' : 'Almuerzo');
-      
-      // Variable para almacenar el QR code data URL
-      let qrCodeDataUrl = null;
+    // Función para imprimir recibo detallado (impresión nativa sin previsualización)
+    const handlePrintReceipt = async (order) => {
+      try {
+        const isBreakfast = order.type === 'breakfast';
+        const isPOS = Array.isArray(order.items) && order.items.length && !Array.isArray(order.breakfasts) && !Array.isArray(order.meals);
+        const table = formatValue(order.tableNumber || order.meals?.[0]?.tableNumber || order.breakfasts?.[0]?.tableNumber);
+        const pago = isPOS ? (() => {
+          const raw = (typeof order.paymentMethod === 'string' ? order.paymentMethod : order.paymentMethod?.name || '').toString().toLowerCase();
+          if (raw.includes('efect')) return 'Efectivo';
+          if (raw.includes('nequi')) return 'Nequi';
+          if (raw.includes('davi')) return 'Daviplata';
+          return order.paymentMethod?.name || order.paymentMethod || '';
+        })() : paymentMethodsOnly(order);
 
-      // Función para generar el código QR
-      const generateQRCode = async () => {
-        try {
-          const qrText = 'https://whatsapp.com/channel/0029VaAqM9CFGUzJgcRJj93w';
-          const qrDataUrl = await QRCode.toDataURL(qrText, {
-            width: 150,
-            margin: 2,
-            color: {
-              dark: '#000000',
-              light: '#FFFFFF'
-            }
+        const fmt = (v) => (Number(v)||0).toLocaleString('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 });
+        const total = fmt(order.total);
+        const savedDate = order.paymentDate?.toDate ? order.paymentDate.toDate() : (order.createdAt?.toDate ? order.createdAt.toDate() : (order.paymentDate || order.createdAt ? new Date(order.paymentDate || order.createdAt) : new Date()));
+        const now = new Date();
+        const fecha = (isPOS ? savedDate : now).toLocaleString('es-CO');
+
+        // Construir texto ESC/POS simple
+        const ESC = '\x1B';
+        let receipt = '';
+        receipt += ESC + '@';
+        receipt += ESC + 'a' + '\x01';
+        receipt += ESC + '!' + '\x18';
+        receipt += 'Cocina Casera\n';
+        receipt += ESC + '!' + '\x00';
+        receipt += fecha + '\n';
+        receipt += '================================\n';
+        receipt += `Tipo: ${isPOS ? (order.orderType || '') : (isBreakfast ? 'Desayuno' : 'Almuerzo')}\n`;
+        if (table) receipt += `Mesa: ${table}\n`;
+        receipt += '--------------------------------\n';
+
+        // Items
+        if (!isBreakfast && Array.isArray(order.meals)) {
+          order.meals.forEach((m, idx) => {
+            const name = m.name || m.principle?.[0]?.name || `Almuerzo ${idx+1}`;
+            const price = (m.price || m.unitPrice || 0);
+            receipt += `${name}\n`;
+            receipt += `${(m.quantity||1)} x ${fmt(price)}\n`;
           });
-          return qrDataUrl;
-        } catch (err) {
-          console.error('Error generating QR code:', err);
-          return null;
+        } else if (isBreakfast && Array.isArray(order.breakfasts)) {
+          order.breakfasts.forEach((b, idx) => {
+            const name = b.name || `Desayuno ${idx+1}`;
+            const price = b.price || 0;
+            receipt += `${name}\n`;
+            receipt += `${(b.quantity||1)} x ${fmt(price)}\n`;
+          });
         }
-      };
-  let resumen = '';
-      if (!isBreakfast && Array.isArray(order.meals)) {
-        resumen += `<div style='font-weight:bold;margin-bottom:4px;'>✅ Resumen del Pedido</div>`;
-        resumen += `<div>🍽 ${order.meals.length} almuerzos en total</div>`;
-        order.meals.forEach((m, idx) => {
-          resumen += `<div style='margin-top:10px;'><b>🍽 Almuerzo ${idx + 1} – $${(m.price || order.total || '').toLocaleString('es-CO')} (${pago})</b></div>`;
-          // Sopa
-          if (m.soup?.name === 'Solo bandeja') resumen += '<div>solo bandeja</div>';
-          else if (m.soupReplacement?.name) resumen += `<div>${m.soupReplacement.name} (por sopa)</div>`;
-          else if (m.soup?.name && m.soup.name !== 'Sin sopa') resumen += `<div>${m.soup.name}</div>`;
-          // Principio
-          if (m.principleReplacement?.name) resumen += `<div>${m.principleReplacement.name} (por principio)</div>`;
-          else if (Array.isArray(m.principle) && m.principle.length > 0) resumen += `<div>${m.principle.map(p => p.name).join(', ')}</div>`;
-          // Proteína
-          const specialRice = Array.isArray(m.principle) && m.principle.some(p => ['Arroz con pollo', 'Arroz paisa', 'Arroz tres carnes'].includes(p.name));
-          if (specialRice) resumen += `<div>Proteína: Ya incluida en el arroz</div>`;
-          else if (m.protein?.name) resumen += `<div>Proteína: ${m.protein.name}</div>`;
-          // Bebida
-          if (m.drink?.name) resumen += `<div>${m.drink.name === 'Juego de mango' ? 'Jugo de mango' : m.drink.name}</div>`;
-          // Cubiertos
-          resumen += `<div>Cubiertos: ${m.cutlery ? 'Sí' : 'No'}</div>`;
-          // Acompañamientos
-          if (specialRice) resumen += `<div>Acompañamientos: Ya incluidos</div>`;
-          else if (Array.isArray(m.sides) && m.sides.length > 0) resumen += `<div>Acompañamientos: ${m.sides.map(s => s.name).join(', ')}</div>`;
-          else resumen += `<div>Acompañamientos: Ninguno</div>`;
-          // Adiciones
-          if (Array.isArray(m.additions) && m.additions.length > 0) {
-            resumen += `<div>Adiciones:</div>`;
-            m.additions.forEach(a => {
-              resumen += `<div style='margin-left:10px;'>- ${a.name}${a.protein ? ' (' + a.protein + ')' : ''} (${a.quantity || 1})</div>`;
-            });
-          }
-          // Notas
-          resumen += `<div>Notas: ${m.notes || 'Ninguna'}</div>`;
-          // Mesa
-          resumen += `<div>Mesa: ${m.tableNumber || table}</div>`;
-          // Tipo
-          resumen += `<div>Tipo: ${m.orderType === 'table' ? 'Para mesa' : m.orderType === 'takeaway' ? 'Para llevar' : ''}</div>`;
-        });
-  } else if (isBreakfast && Array.isArray(order.breakfasts)) {
-        resumen += `<div style='font-weight:bold;margin-bottom:4px;'>✅ Resumen del Pedido</div>`;
-        resumen += `<div>🍽 ${order.breakfasts.length} desayunos en total</div>`;
-        order.breakfasts.forEach((b, idx) => {
-          resumen += `<div style='margin-top:10px;'><b>🍽 Desayuno ${idx + 1} – $${(b.price || order.total || '').toLocaleString('es-CO')} (${pago})</b></div>`;
-          if (b.type) resumen += `<div>${typeof b.type === 'string' ? b.type : b.type?.name || ''}</div>`;
-          if (b.protein) resumen += `<div>Proteína: ${typeof b.protein === 'string' ? b.protein : b.protein?.name || ''}</div>`;
-          if (b.drink) resumen += `<div>Bebida: ${typeof b.drink === 'string' ? b.drink : b.drink?.name || ''}</div>`;
-          if (b.additions && b.additions.length > 0) {
-            resumen += `<div>Adiciones:</div>`;
-            b.additions.forEach(a => {
-              resumen += `<div style='margin-left:10px;'>- ${a.name} (${a.quantity || 1})</div>`;
-            });
-          }
-          resumen += `<div>Notas: ${b.notes || 'Ninguna'}</div>`;
-          resumen += `<div>Mesa: ${b.tableNumber || table}</div>`;
-          resumen += `<div>Tipo: ${b.orderType === 'table' ? 'Para mesa' : b.orderType === 'takeaway' ? 'Para llevar' : ''}</div>`;
-        });
-      }
-      // Comando ESC/POS para abrir la caja registradora SOLO para tickets de mesa
-      let openDrawerCmd = '';
-      if (order.type === 'lunch' || order.type === 'table') {
-        // ESC p m t1 t2  => \x1B\x70\x00\x19\xFA
-        openDrawerCmd = '<script>function openDrawer(){try{var w=window;w.document.write("<pre>\x1B\x70\x00\x19\xFA</pre>");}catch(e){}}</script><script>openDrawer();</script>';
-      }
 
-      // Generar el código QR y luego abrir la ventana de impresión
-      generateQRCode().then(qrUrl => {
-        qrCodeDataUrl = qrUrl;
-        
-        // Plantilla: si es POS, imprimimos en formato de ticket de Caja POS
-        if (isPOS) {
-          const items = Array.isArray(order.items) ? order.items : [];
-          const itemsHtml = items.map(it => {
-            const qty = Number(it.quantity||0);
-            const unit = Number(it.unitPrice||0);
-            const lineTotal = qty * unit;
-            return `<div class='it-row'><div class='it-left'><div class='it-name'>${it.name}</div><div class='it-line'>${qty}x ${fmt(unit)}</div></div><div class='it-right'>${fmt(lineTotal)}</div></div>`;
-          }).join('');
-          const efectivo = (pago || '').toLowerCase().includes('efect');
-          win.document.write(`
-            <html><head><title>Recibo</title>
-            <meta charset='utf-8'/>
-            <style>
-              body { font-family: monospace; font-size: 13px; margin:0; padding:0 12px; }
-              h2 { margin:4px 0 6px; font-size:18px; text-align:center; }
-              .line { border-bottom:2px solid #000; margin:8px 0; height:0; }
-              .logo { text-align:center; margin-top:6px; }
-              .logo img { 
-                width:110px; 
-                height:auto; 
-                filter:brightness(0) contrast(1.5); 
-                image-rendering: crisp-edges;
-                display: block;
-                margin: 0 auto;
-                max-width: 110px;
-                -webkit-print-color-adjust: exact;
-                print-color-adjust: exact;
-              }
-              .meta div { padding:2px 0; }
-              .thanks { text-align:center; margin-top:14px; font-weight:bold; }
-              .contact { text-align:center; margin-top:8px; }
-              .qr-container { text-align:center; margin-top:14px; }
-              .qr-text { font-size:11px; margin-bottom:4px; }
-              .it-row { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px; }
-              .it-left { flex:1; min-width:0; }
-              .it-name { font-weight:bold; }
-              .it-line { padding-left:4px; }
-              .it-right { min-width:70px; text-align:right; font-weight:bold; }
-            </style>
-            </head><body>
-              <div class='logo'>
-                <img src="/logo.png" alt="Logo" style="width:110px; height:auto; filter:brightness(0) contrast(1.5); image-rendering: crisp-edges; -webkit-print-color-adjust: exact;" />
-                <h2>Cocina Casera</h2>
-                <div style='text-align:center; font-size:12px; margin-top:4px; font-weight:bold;'>(Uso interno - No es factura DIAN)</div>
-              </div>
-              <div class='line'></div>
-              <div class='meta'>
-                <div><b>Tipo:</b> ${tipo}</div>
-                ${order.tableNumber ? `<div><b>Mesa:</b> ${order.tableNumber}</div>` : ''}
-                <div><b>Fecha:</b> ${fecha}</div>
-                ${order.paymentNote ? `<div><b>Nota:</b> ${order.paymentNote}</div>`:''}
-              </div>
-              <div class='line'></div>
-              <div><b>Items:</b></div>
-              ${itemsHtml}
-              <div class='line'></div>
-              <div><b>Total:</b> ${fmt(order.total)}</div>
-              <div><b>Pago:</b> ${pago}</div>
-              ${efectivo ? `<div><b>Recibido:</b> ${fmt(order.cashReceived||0)}</div>`:''}
-              ${efectivo ? `<div><b>Vueltos:</b> ${fmt(order.changeGiven||0)}</div>`:''}
-              <div class='line'></div>
-              <div class='thanks'>¡Gracias por su compra!</div>
-              <div class='contact'>Te esperamos mañana con un<br>nuevo menú.<br>Escríbenos al <strong>301 6476916</strong><br><strong>Calle 133#126c-09</strong></div>
-              <div class='qr-container'>
-                <div class='qr-text'>Escanea este código QR para unirte a nuestro canal de WhatsApp<br>y recibir nuestro menú diario:</div>
-                ${qrCodeDataUrl ? `<img src='${qrCodeDataUrl}' width='140' height='140' />` : ''}
-              </div>
-              <br/><br/>
-            </body></html>
-          `);
-        } else {
-          // Plantilla clásica para pedidos estructurados (mesera)
-          win.document.write(`
-            <html><head><title>Recibo</title>
-            <style>
-              body { font-family: monospace; font-size: 14px; margin: 0; padding: 0 10px; }
-              h2 { margin: 5px 0 8px 0; font-size: 18px; text-align: center; }
-              .line { border-bottom: 2px solid #000; margin: 10px 0; height: 0; }
-              .logo { text-align: center; margin-bottom: 8px; }
-              .thanks { text-align: center; margin-top: 16px; font-weight: bold; }
-              .contact { text-align: center; margin-top: 8px; }
-              .qr-container { text-align: center; margin-top: 15px; }
-              .qr-text { font-size: 12px; margin-bottom: 5px; text-align: center; }
-              div { padding-left: 5px; padding-right: 5px; }
-            </style>
-            </head><body>
-            <div class='logo'>
-              <img src="/logo.png" alt="Logo" style="width:100px; height:auto; display:block; margin:0 auto; filter:brightness(0) contrast(1.5); image-rendering: crisp-edges; -webkit-print-color-adjust: exact; print-color-adjust: exact;" />
-              <h2>Cocina Casera</h2>
-              <div style='text-align:center; font-size:12px; color:#000; margin-top:5px; font-weight:bold;'>(Uso interno - No es factura DIAN)</div>
-            </div>
-            <div class='line'></div>
-            <div><b>Tipo:</b> ${tipo}</div>
-            <div><b>Mesa:</b> ${table}</div>
-            <div><b>Pago:</b> ${pago}</div>
-            <div><b>Total:</b> ${fmt(order.total)}</div>
-            <div><b>Fecha:</b> ${fecha}</div>
-            <div class='line'></div>
-            ${resumen}
-            <div class='line'></div>
-            <div class='thanks'>¡Gracias por su compra!</div>
-            <div class='contact'>Te esperamos mañana con un nuevo menú.<br>Escríbenos al <strong>301 6476916</strong><br><strong>Calle 133#126c-09</strong></div>
-            <div class='qr-container'>
-              <div class='qr-text'>Escanea este código QR para unirte a nuestro canal de WhatsApp<br>y recibir nuestro menú diario:</div>
-              ${qrCodeDataUrl ? `<img src="${qrCodeDataUrl}" width="150" height="150" alt="QR Code" />` : ''}
-            </div>
-            <br><br><br><br><br><br>
-            </body></html>
-          `);
+        receipt += '--------------------------------\n';
+        receipt += `Total: ${total}\n`;
+        receipt += `Pago: ${pago}\n`;
+        receipt += '\n\n';
+
+        const ip = localStorage.getItem('printerIp') || '192.168.1.100';
+        const port = parseInt(localStorage.getItem('printerPort')) || 9100;
+
+        try {
+          await PrinterPlugin.printTCP({ ip, port, data: receipt });
+          console.log('Recibo impreso vía TCP en', ip, port);
+          return; // imprimir automáticamente sin previsualización ni navegación
+        } catch (err) {
+          console.warn('Fallo impresión nativa:', err);
+          setErrorMessage && setErrorMessage('Fallo impresión nativa: ' + (err?.message || String(err)));
+          return;
         }
-        win.document.close();
-        win.focus();
-        setTimeout(() => {
-          win.print();
-          win.close();
-        }, 500);
-      });
+      } catch (err) {
+        console.error('Error en handlePrintReceipt:', err);
+        setErrorMessage && setErrorMessage('Error imprimiendo: ' + (err?.message || String(err)));
+        return;
+      }
     };
 
   // Catálogos almuerzo

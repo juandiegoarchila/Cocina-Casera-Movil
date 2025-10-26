@@ -7,12 +7,93 @@ import { CurrencyDollarIcon, PlusCircleIcon, PencilIcon, XCircleIcon } from '@he
 import { useAuth } from '../Auth/AuthProvider';
 import PrinterPlugin from '../../plugins/PrinterPlugin.ts';
 
+
+// Modelos de impresora soportados
+const PRINTER_MODELS = [
+  { id: 'epson-tm-t20ii', label: 'Epson TM-T20II (Ethernet)' },
+  { id: 'epson-tm-t88v', label: 'Epson TM-T88V (Ethernet)' },
+  { id: 'generic-escpos', label: 'Genérica ESC/POS' },
+];
+
 const formatPrice = (v) => new Intl.NumberFormat('es-CO',{ style:'currency', currency:'COP', maximumFractionDigits:0 }).format(v||0);
 
 const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
   const { role } = useAuth(); // 2 = admin, 3 = mesera
 
-  // Estado principal
+  // Estado de configuración de impresora
+  const [showPrinterConfig, setShowPrinterConfig] = useState(false);
+  const [printerModel, setPrinterModel] = useState(localStorage.getItem('printerModel') || 'epson-tm-t20ii');
+  const [printerIp, setPrinterIp] = useState(localStorage.getItem('printerIp') || '192.168.1.100');
+  const [printerPort, setPrinterPort] = useState(localStorage.getItem('printerPort') || '9100');
+  const [printerLog, setPrinterLog] = useState('');
+  const [printerDiag, setPrinterDiag] = useState('');
+  const [printerDiagError, setPrinterDiagError] = useState('');
+
+  // Guardar configuración
+  const savePrinterConfig = () => {
+    localStorage.setItem('printerModel', printerModel);
+    localStorage.setItem('printerIp', printerIp);
+    localStorage.setItem('printerPort', printerPort);
+    setShowPrinterConfig(false);
+    setPrinterLog('');
+    setPrinterDiag('');
+    setPrinterDiagError('');
+  };
+
+  // Prueba de impresión
+  const handlePrinterTest = async () => {
+    setPrinterLog('Imprimiendo prueba...');
+    setPrinterDiag('');
+    setPrinterDiagError('');
+    try {
+      await PrinterPlugin.printTCP({
+        ip: printerIp,
+        port: parseInt(printerPort),
+        data: '\x1B@\x1Ba\x01*** PRUEBA DE IMPRESIÓN ***\nModelo: ' + PRINTER_MODELS.find(m=>m.id===printerModel)?.label + '\nIP: ' + printerIp + '\nPuerto: ' + printerPort + '\n\n--------------------------\n\n',
+      });
+      setPrinterLog('✅ Impresión de prueba enviada.');
+    } catch (err) {
+      setPrinterLog('❌ Error: ' + err.message);
+    }
+  };
+
+  // Prueba abrir caja
+  const handleOpenDrawerTest = async () => {
+    setPrinterLog('Abriendo caja...');
+    setPrinterDiag('');
+    setPrinterDiagError('');
+    try {
+      await PrinterPlugin.openCashDrawer({
+        ip: printerIp,
+        port: parseInt(printerPort),
+      });
+      setPrinterLog('✅ Señal de apertura enviada.');
+    } catch (err) {
+      setPrinterLog('❌ Error: ' + err.message);
+    }
+  };
+
+  // Probar conexión
+  const handleTestConnection = async () => {
+    setPrinterDiag('Probando conexión...');
+    setPrinterDiagError('');
+    try {
+      // Simplemente intentar imprimir un texto corto
+      await PrinterPlugin.printTCP({
+        ip: printerIp,
+        port: parseInt(printerPort),
+        data: '\x1B@\x1Ba\x01Conexión OK\n',
+      });
+      setPrinterDiag('✅ Conexión exitosa.');
+    } catch (err) {
+      setPrinterDiagError('❌ Error de conexión: ' + err.message);
+    }
+  };
+
+
+  // Limpiar log
+  const handleClearPrinterLog = () => setPrinterLog('');
+
   const [posItems, setPosItems] = useState([]);
   const [cartItems, setCartItems] = useState([]); // {id, refId, name, price, quantity}
   const [posOrderType, setPosOrderType] = useState('almuerzo');
@@ -449,7 +530,7 @@ const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
       // Fallback: impresión web si falla la térmica
       try {
         if (typeof window === 'undefined') return;
-        const win = window.open('', 'PRINT', 'height=650,width=420');
+        const win = window.open('', 'PRINT', 'height=650,width=600'); // Aumentado para 80mm
         if(!win) return;
         
         // Generar QR canal WhatsApp
@@ -477,32 +558,114 @@ const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
           <html><head><title>Recibo</title>
           <meta charset='utf-8'/>
           <style>
-            body { font-family: monospace; font-size: 13px; margin:0; padding:0 12px; }
-            h2 { margin:4px 0 6px; font-size:18px; text-align:center; }
-            .line { border-bottom:2px solid #000; margin:8px 0; height:0; }
-            .logo { text-align:center; margin-top:6px; }
+            /* Optimizado para impresora térmica 80mm */
+            @page { margin: 0; size: 80mm auto; }
+            body { 
+              font-family: 'Courier New', monospace; 
+              font-size: 14px; 
+              margin: 0; 
+              padding: 8px 12px; 
+              width: 80mm;
+              max-width: 80mm;
+              line-height: 1.3;
+            }
+            h2 { 
+              margin: 6px 0 8px; 
+              font-size: 20px; 
+              text-align: center; 
+              font-weight: bold;
+            }
+            .line { 
+              border-bottom: 2px solid #000; 
+              margin: 10px 0; 
+              height: 0; 
+            }
+            .logo { 
+              text-align: center; 
+              margin-top: 8px; 
+            }
             .logo img { 
-              width:110px; 
-              height:auto; 
-              filter:brightness(0) contrast(1.5); 
+              width: 130px; 
+              height: auto; 
+              filter: brightness(0) contrast(1.5); 
               image-rendering: crisp-edges;
               display: block;
               margin: 0 auto;
-              max-width: 110px;
+              max-width: 130px;
               -webkit-print-color-adjust: exact;
               print-color-adjust: exact;
             }
-            .meta div { padding:2px 0; }
-            .thanks { text-align:center; margin-top:14px; font-weight:bold; }
-            .contact { text-align:center; margin-top:8px; }
-            .qr-container { text-align:center; margin-top:14px; }
-            .qr-text { font-size:11px; margin-bottom:4px; }
-            .small { font-size:11px; }
-      .it-row { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:6px; }
-      .it-left { flex:1; min-width:0; }
-      .it-name { font-weight:bold; }
-      .it-line { padding-left:4px; }
-      .it-right { min-width:70px; text-align:right; font-weight:bold; }
+            .meta div { 
+              padding: 3px 0; 
+              font-size: 13px;
+            }
+            .thanks { 
+              text-align: center; 
+              margin-top: 16px; 
+              font-weight: bold; 
+              font-size: 15px;
+            }
+            .contact { 
+              text-align: center; 
+              margin-top: 12px; 
+              font-size: 13px;
+              line-height: 1.4;
+            }
+            .qr-container { 
+              text-align: center; 
+              margin-top: 16px; 
+            }
+            .qr-text { 
+              font-size: 12px; 
+              margin-bottom: 8px; 
+              line-height: 1.3;
+            }
+            .small { 
+              font-size: 12px; 
+            }
+            /* Items optimizados para 80mm */
+            .it-row { 
+              display: flex; 
+              justify-content: space-between; 
+              align-items: flex-start; 
+              gap: 12px; 
+              margin-bottom: 8px; 
+              font-size: 13px;
+            }
+            .it-left { 
+              flex: 1; 
+              min-width: 0; 
+            }
+            .it-name { 
+              font-weight: bold; 
+              word-wrap: break-word;
+              margin-bottom: 2px;
+            }
+            .it-line { 
+              padding-left: 6px; 
+              font-size: 12px;
+              color: #666;
+            }
+            .it-right { 
+              min-width: 85px; 
+              text-align: right; 
+              font-weight: bold; 
+              flex-shrink: 0;
+            }
+            /* Totales y pagos */
+            .total-section {
+              font-size: 14px;
+              margin: 8px 0;
+            }
+            .total-section > div {
+              display: flex;
+              justify-content: space-between;
+              margin: 4px 0;
+            }
+            .total-amount {
+              font-size: 16px;
+              font-weight: bold;
+            }
           </style>
           </head><body>
             <div class='logo'>
@@ -601,7 +764,56 @@ const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
   );
 
   return (
+
   <div className="w-full mx-auto px-3 sm:px-6 py-4 lg:py-3 lg:h-[calc(100vh-5rem)] lg:overflow-hidden">
+      {/* Modal de Configuración de Impresora */}
+      {showPrinterConfig && (
+        <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 w-full max-w-md rounded-xl shadow-2xl max-h-[95vh] overflow-y-auto p-6 relative">
+            <button onClick={()=>setShowPrinterConfig(false)} className="absolute top-2 right-2 text-gray-400 hover:text-gray-200"><XCircleIcon className="w-6 h-6"/></button>
+            <h3 className="text-lg font-bold text-white mb-2">🖨️ Configuración de Impresora</h3>
+            <div className="mb-4">
+              <label className="block text-gray-300 mb-1">Modelo de Impresora</label>
+              <select value={printerModel} onChange={e=>setPrinterModel(e.target.value)} className="w-full px-3 py-2 rounded bg-gray-800 text-white">
+                {PRINTER_MODELS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+              </select>
+              <div className="text-xs text-gray-400 mt-1">Selecciona tu modelo para configuración automática</div>
+            </div>
+            <div className="mb-4 grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-gray-300 mb-1">Dirección IP</label>
+                <input value={printerIp} onChange={e=>setPrinterIp(e.target.value)} className="w-full px-3 py-2 rounded bg-gray-800 text-white" />
+              </div>
+              <div>
+                <label className="block text-gray-300 mb-1">Puerto</label>
+                <input value={printerPort} onChange={e=>setPrinterPort(e.target.value)} className="w-full px-3 py-2 rounded bg-gray-800 text-white" />
+              </div>
+            </div>
+            <div className="flex gap-2 mb-4 flex-wrap">
+              <button onClick={handlePrinterTest} className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded text-sm">🖨️ IMPRESIÓN DE PRUEBA</button>
+              <button onClick={handleOpenDrawerTest} className="flex-1 py-2 bg-yellow-600 hover:bg-yellow-700 text-white rounded text-sm">💰 PRUEBA ABRIR CAJA</button>
+            </div>
+            <div className="flex gap-2 mb-4 flex-wrap">
+              <button onClick={handleTestConnection} className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded text-sm">🔍 Probar Conexión</button>
+              <button onClick={savePrinterConfig} className="flex-1 py-2 bg-green-600 hover:bg-green-700 text-white rounded text-sm">Guardar y Cerrar</button>
+              <button onClick={()=>setShowPrinterConfig(false)} className="flex-1 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded text-sm">Cerrar</button>
+            </div>
+            <div className="mb-2">
+              <label className="block text-gray-300 mb-1">📋 Log de diagnóstico:</label>
+              <div className="bg-gray-800 text-gray-100 rounded p-2 min-h-[48px] text-xs whitespace-pre-wrap max-h-32 overflow-y-auto">{printerLog || 'El log de diagnóstico aparecerá aquí...'}</div>
+              <button onClick={handleClearPrinterLog} className="mt-1 px-2 py-1 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded text-xs">🗑 Limpiar Log</button>
+            </div>
+            {(printerDiag || printerDiagError) && (
+              <div className={`mt-2 p-2 rounded text-xs ${printerDiagError ? 'bg-red-800 text-red-200' : 'bg-emerald-800 text-emerald-200'}`}>{printerDiag || printerDiagError}</div>
+            )}
+            <div className="mt-4 text-yellow-300 text-xs flex items-center gap-2">
+              <span className="text-2xl">⚠️</span>
+              <span>Configuración Previa Obligatoria<br/>Sin configurar IP y modelo → Plugin falla. Siempre configura antes de usar la caja.</span>
+            </div>
+            <div className="mt-2 text-gray-400 text-xs">Esta configuración se aplica automáticamente a todos los botones de impresión en la caja.</div>
+          </div>
+        </div>
+      )}
 
   <div className={`grid grid-cols-1 ${posStage==='completed' ? 'lg:grid-cols-1' : posStage==='pay' ? 'lg:grid-cols-[440px_1fr]' : 'lg:grid-cols-3'} gap-4 items-start h-full`}>
         {/* Catálogo (columna izquierda 2/3) - Solo mostrar si NO está completado */}
@@ -713,9 +925,24 @@ const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
   <div className={`${theme==='dark' ? 'bg-gray-800':'bg-white'} rounded-xl p-3 shadow-lg flex flex-col lg:sticky lg:top-0 self-start h-full lg:h-full min-h-0 ${posStage==='completed' ? 'w-full max-w-2xl mx-auto' : posStage==='pay' ? 'min-w-0' : ''}`}>
           {posStage==='select' ? (
             <>
-              <h3 className="text-lg font-semibold text-gray-100 mb-3">Resumen</h3>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-lg font-semibold text-gray-100">Resumen</h3>
+                <button
+                  onClick={()=>setShowPrinterConfig(true)}
+                  className="ml-2 px-2 py-1 text-xs rounded bg-blue-600 hover:bg-blue-700 text-white shadow"
+                >
+                  🖨️ Impresora
+                </button>
+              </div>
               <div className="flex-1 min-h-0 overflow-y-auto space-y-2 mb-3 pr-1 custom-scrollbar">
-                {cartItems.length===0 && <div className="text-sm text-gray-400">Añade artículos con un click.</div>}
+                {cartItems.length===0 && (
+                  <div className="min-h-[160px] flex items-center justify-center">
+                    <div className="text-center">
+                      <div className="text-lg font-medium text-gray-300">Añade artículos con un click.</div>
+                      <div className="text-xs text-gray-500 mt-1">Selecciona productos desde la izquierda</div>
+                    </div>
+                  </div>
+                )}
                 {cartItems.map(ci => (
                   <div key={ci.id} className="flex items-center justify-between text-sm bg-gray-700 rounded p-2">
                     <div className="flex-1 mr-2">
@@ -977,6 +1204,6 @@ const CajaPOS = ({ theme='dark', setError=()=>{}, setSuccess=()=>{} }) => {
       )}
     </div>
   );
-};
+}
 
 export default CajaPOS;
