@@ -8,6 +8,9 @@ import { collection, onSnapshot, updateDoc, doc, serverTimestamp } from 'firebas
 import LoadingIndicator from '../LoadingIndicator';
 import ErrorMessage from '../ErrorMessage';
 import { calculateTotal } from '../../utils/MealCalculations';
+import { PrinterIcon } from '@heroicons/react/24/outline';
+import PrinterPlugin from '../../plugins/PrinterPlugin.ts';
+import QRCode from 'qrcode';
 
 // NOTA: Debes importar tu catálogo de adiciones correctamente. Aquí se asume que additions está disponible.
 import additions from '../../utils/additionsCatalog'; // Ajusta la ruta según tu proyecto
@@ -180,6 +183,105 @@ const handleSaveEdit = async () => {
   }
 };
 
+  // Función para imprimir ticket desde gestión de pedidos
+  const handlePrintReceipt = async (order) => {
+    try {
+      // Obtener configuración de impresora desde localStorage (mismo formato que CajaPOS)
+      const printerIp = localStorage.getItem('printerIp') || '192.168.1.100';
+      const printerPort = parseInt(localStorage.getItem('printerPort')) || 9100;
+      
+      if (!printerIp || !printerPort) {
+        setErrorMessage('❌ Configure la impresora primero en Caja POS > Configuración de Impresora');
+        return;
+      }
+
+      // Calcular total y preparar datos del recibo
+      const total = calculateTotal(order.meals);
+      const formatPrice = (v) => new Intl.NumberFormat('es-CO',{ style:'currency', currency:'COP', maximumFractionDigits:0 }).format(v||0);
+      
+      // Determinar tipo de orden principal
+      const orderType = order.meals[0]?.orderType === 'takeaway' ? 'Llevar' : 'Mesa';
+      const mealType = order.meals[0]?.name || 'Pedido';
+      
+      // Crear lista de items
+      let itemsText = '';
+      order.meals.forEach(meal => {
+        itemsText += `${meal.name || 'Item'}\n`;
+        itemsText += `1x ${formatPrice(calculateTotal([meal]))}\n`;
+        if (meal.notes) {
+          itemsText += `Notas: ${meal.notes}\n`;
+        }
+        itemsText += `\n`;
+      });
+
+      // Generar código QR para WhatsApp
+      let qrCodeData = '';
+      try {
+        qrCodeData = await QRCode.toString('https://chat.whatsapp.com/JvtlBINb8LJHnr9lXYYLfr', {
+          type: 'terminal',
+          small: true
+        });
+      } catch (error) {
+        console.warn('Error generando QR:', error);
+      }
+
+      // Formatear fecha
+      const orderDate = order.createdAt?.toDate ? order.createdAt.toDate() : new Date(order.createdAt);
+      const formattedDate = orderDate.toLocaleString('es-CO');
+
+      // Construir recibo
+      const receiptData = `
+================================
+      COCINA CASERA
+(Uso interno - No es factura DIAN)
+================================
+Tipo: ${mealType} ${orderType}
+Fecha: ${formattedDate}
+
+Items:
+${itemsText}
+${formatPrice(total)}
+Total: ${formatPrice(total)}
+
+Pago: ${order.paymentMethod || 'Efectivo'}
+Estado: ${order.status || 'Completada'}
+
+¡Gracias por su compra!
+Te esperamos mañana con un
+nuevo menú.
+
+Escríbenos al 301 6476916
+Calle 133#126c-09
+
+Escanea este código QR para unirte a
+nuestro canal de WhatsApp
+y recibir nuestro menú diario:
+
+${qrCodeData}
+
+================================
+
+
+
+\x1b\x69`;  // Comando ESC/POS para corte automático
+
+      // Imprimir
+      await PrinterPlugin.printTCP({
+        ip: printerIp,
+        port: printerPort,
+        data: receiptData
+      });
+
+      setErrorMessage('✅ Recibo impreso exitosamente');
+      setTimeout(() => setErrorMessage(null), 3000);
+
+    } catch (error) {
+      console.error('Error imprimiendo recibo:', error);
+      setErrorMessage(`❌ Error al imprimir: ${error.message}`);
+      setTimeout(() => setErrorMessage(null), 5000);
+    }
+  };
+
   const handleFormChange = (index, field, value) => {
     const newMeals = [...editingOrder.meals];
     if (field === 'principle' || field === 'sides') {
@@ -299,6 +401,14 @@ const handleSaveEdit = async () => {
                     className="px-2 py-1 bg-blue-500 text-white rounded text-xs hover:bg-blue-600"
                   >
                     Editar
+                  </button>
+                  <button
+                    onClick={() => handlePrintReceipt(order)}
+                    className="px-2 py-1 bg-purple-600 text-white rounded text-xs hover:bg-purple-700 flex items-center gap-1"
+                    title="Imprimir Recibo"
+                  >
+                    <PrinterIcon className="w-3 h-3" />
+                    Imprimir
                   </button>
                 </div>
               </div>

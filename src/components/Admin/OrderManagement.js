@@ -24,6 +24,9 @@ import { cleanText, getAddressDisplay } from './utils.js';
 import { getColombiaLocalDateString } from '../../utils/bogotaDate.js';
 import TablaPedidos from './TablaPedidos.js';
 import InteraccionesPedidos from './InteraccionesPedidos.js';
+import PrinterPlugin from '../../plugins/PrinterPlugin.ts';
+import { calculateBreakfastPrice } from '../../utils/BreakfastLogic';
+import QRCode from 'qrcode';
 
 const OrderManagement = ({ setError, setSuccess, theme }) => {
   const [orders, setOrders] = useState([]);
@@ -44,9 +47,11 @@ const OrderManagement = ({ setError, setSuccess, theme }) => {
   const [proteins, setProteins] = useState([]);
   const [newProtein, setNewProtein] = useState({ name: '', quantity: '' });
   const [showProteinModal, setShowProteinModal] = useState(false);
+  // Estados para filtros y UI
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [showAddOrderModal, setShowAddOrderModal] = useState(false);
   const [orderTypeFilter, setOrderTypeFilter] = useState('all');
+  
   // Filtro de fecha para domicilios - inicializar con fecha actual
   const [selectedDate, setSelectedDate] = useState(() => {
     const today = new Date();
@@ -186,7 +191,7 @@ const OrderManagement = ({ setError, setSuccess, theme }) => {
     const unsubLunch = onSnapshot(
       collection(db, 'orders'),
       (snapshot) => {
-        latestLunch = snapshot.docs.map((doc) => {
+        const newLunchOrders = snapshot.docs.map((doc) => {
           const data = doc.data();
           const meals =
             Array.isArray(data.meals) && data.meals.length > 0
@@ -213,6 +218,8 @@ const OrderManagement = ({ setError, setSuccess, theme }) => {
             status: data.status || 'Pendiente'
           };
         });
+        
+        latestLunch = newLunchOrders;
         recomputeWithClient();
       },
       (error) => {
@@ -224,7 +231,7 @@ const OrderManagement = ({ setError, setSuccess, theme }) => {
     const unsubBreakfast = onSnapshot(
       collection(db, 'deliveryBreakfastOrders'),
       (snapshot) => {
-        latestBreakfast = snapshot.docs.map((doc) => {
+        const newBreakfastOrders = snapshot.docs.map((doc) => {
           const data = doc.data();
           return {
             id: doc.id,
@@ -237,6 +244,8 @@ const OrderManagement = ({ setError, setSuccess, theme }) => {
             status: data.status || 'Pendiente'
           };
         });
+        
+        latestBreakfast = newBreakfastOrders;
         recompute();
       },
       (error) => {
@@ -249,7 +258,7 @@ const OrderManagement = ({ setError, setSuccess, theme }) => {
     const unsubClient = onSnapshot(
       collection(db, 'clientOrders'),
       (snapshot) => {
-        latestClientOrders = snapshot.docs.map((doc) => {
+        const newClientOrders = snapshot.docs.map((doc) => {
           const data = doc.data();
           const isBreakfast = Array.isArray(data.breakfasts) && data.breakfasts.length > 0;
 
@@ -308,8 +317,8 @@ const OrderManagement = ({ setError, setSuccess, theme }) => {
             status: data.status || 'Pendiente'
           };
         });
-
-        console.log('📊 [OrderManagement] ClientOrders procesados:', latestClientOrders.length);
+        console.log('📊 [OrderManagement] ClientOrders procesados:', newClientOrders.length);
+        latestClientOrders = newClientOrders;
         recomputeWithClient();
       },
       (error) => {

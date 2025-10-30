@@ -153,6 +153,7 @@ const TableOrdersAdmin = ({ theme = 'light' }) => {
   });
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState(null);
+  const [successMessage, setSuccessMessage] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(10);
   const [sortField, setSortField] = useState('createdAt');
@@ -166,79 +167,262 @@ const TableOrdersAdmin = ({ theme = 'light' }) => {
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
   const menuRef = useRef(null);
 
-    // Función para imprimir recibo detallado (impresión nativa sin previsualización)
+    // Función para imprimir recibo directamente a impresora TCP (IDÉNTICA A CajaPOS)
     const handlePrintReceipt = async (order) => {
       try {
-        const isBreakfast = order.type === 'breakfast';
-        const isPOS = Array.isArray(order.items) && order.items.length && !Array.isArray(order.breakfasts) && !Array.isArray(order.meals);
-        const table = formatValue(order.tableNumber || order.meals?.[0]?.tableNumber || order.breakfasts?.[0]?.tableNumber);
-        const pago = isPOS ? (() => {
-          const raw = (typeof order.paymentMethod === 'string' ? order.paymentMethod : order.paymentMethod?.name || '').toString().toLowerCase();
-          if (raw.includes('efect')) return 'Efectivo';
-          if (raw.includes('nequi')) return 'Nequi';
-          if (raw.includes('davi')) return 'Daviplata';
-          return order.paymentMethod?.name || order.paymentMethod || '';
-        })() : paymentMethodsOnly(order);
-
-        const fmt = (v) => (Number(v)||0).toLocaleString('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 });
-        const total = fmt(order.total);
-        const savedDate = order.paymentDate?.toDate ? order.paymentDate.toDate() : (order.createdAt?.toDate ? order.createdAt.toDate() : (order.paymentDate || order.createdAt ? new Date(order.paymentDate || order.createdAt) : new Date()));
-        const now = new Date();
-        const fecha = (isPOS ? savedDate : now).toLocaleString('es-CO');
-
-        // Construir texto ESC/POS simple
-        const ESC = '\x1B';
-        let receipt = '';
-        receipt += ESC + '@';
-        receipt += ESC + 'a' + '\x01';
-        receipt += ESC + '!' + '\x18';
-        receipt += 'Cocina Casera\n';
-        receipt += ESC + '!' + '\x00';
-        receipt += fecha + '\n';
-        receipt += '================================\n';
-        receipt += `Tipo: ${isPOS ? (order.orderType || '') : (isBreakfast ? 'Desayuno' : 'Almuerzo')}\n`;
-        if (table) receipt += `Mesa: ${table}\n`;
-        receipt += '--------------------------------\n';
-
-        // Items
-        if (!isBreakfast && Array.isArray(order.meals)) {
-          order.meals.forEach((m, idx) => {
-            const name = m.name || m.principle?.[0]?.name || `Almuerzo ${idx+1}`;
-            const price = (m.price || m.unitPrice || 0);
-            receipt += `${name}\n`;
-            receipt += `${(m.quantity||1)} x ${fmt(price)}\n`;
-          });
-        } else if (isBreakfast && Array.isArray(order.breakfasts)) {
-          order.breakfasts.forEach((b, idx) => {
-            const name = b.name || `Desayuno ${idx+1}`;
-            const price = b.price || 0;
-            receipt += `${name}\n`;
-            receipt += `${(b.quantity||1)} x ${fmt(price)}\n`;
-          });
-        }
-
-        receipt += '--------------------------------\n';
-        receipt += `Total: ${total}\n`;
-        receipt += `Pago: ${pago}\n`;
-        receipt += '\n\n';
-
-        const ip = localStorage.getItem('printerIp') || '192.168.1.100';
-        const port = parseInt(localStorage.getItem('printerPort')) || 9100;
-
-        try {
-          await PrinterPlugin.printTCP({ ip, port, data: receipt });
-          console.log('Recibo impreso vía TCP en', ip, port);
-          return; // imprimir automáticamente sin previsualización ni navegación
-        } catch (err) {
-          console.warn('Fallo impresión nativa:', err);
-          setErrorMessage && setErrorMessage('Fallo impresión nativa: ' + (err?.message || String(err)));
+        // Obtener configuración de impresora desde localStorage (mismo formato que CajaPOS)
+        const printerIp = localStorage.getItem('printerIp') || '192.168.1.100';
+        const printerPort = parseInt(localStorage.getItem('printerPort')) || 9100;
+        
+        if (!printerIp || !printerPort) {
+          setErrorMessage('❌ Configure la impresora primero en Caja POS > Configuración de Impresora');
           return;
         }
-      } catch (err) {
-        console.error('Error en handlePrintReceipt:', err);
-        setErrorMessage && setErrorMessage('Error imprimiendo: ' + (err?.message || String(err)));
-        return;
+
+        // Preparar datos EXACTAMENTE como CajaPOS
+        const fecha = (order.createdAt?.toDate ? order.createdAt.toDate() : new Date(order.createdAt)).toLocaleString('es-CO');
+        const isBreakfast = order.type === 'breakfast';
+        const isPOS = Array.isArray(order.items) && order.items.length && !Array.isArray(order.breakfasts) && !Array.isArray(order.meals);
+        
+        // Determinar tipo de orden (EXACTO A CajaPOS)
+        let orderTypeNormalized, serviceType, tableNumber, takeaway, paymentMethod, cashReceived, changeGiven, note;
+        
+        if (isPOS) {
+          orderTypeNormalized = order.orderTypeNormalized;
+          serviceType = order.serviceType;
+          tableNumber = order.tableNumber;
+          takeaway = order.takeaway;
+          paymentMethod = order.paymentMethod;
+          cashReceived = order.cashReceived;
+          changeGiven = order.changeGiven;
+          note = order.paymentNote || order.notes;
+        } else {
+          // Para órdenes de mesas normales
+          const mealType = isBreakfast ? 'desayuno' : 'almuerzo';
+          const svcType = order.tableNumber ? 'mesa' : 'llevar';
+          orderTypeNormalized = `${mealType}_${svcType}`;
+          serviceType = svcType;
+          tableNumber = order.tableNumber;
+          takeaway = !order.tableNumber;
+          
+          // Determinar método de pago para mesas
+          if (Array.isArray(order.payments) && order.payments.length) {
+            paymentMethod = order.payments.map(p => p.method).join(', ');
+          } else {
+            paymentMethod = 'efectivo';
+          }
+          note = order.notes;
+        }
+        
+        // Preparar items exactamente como CajaPOS
+        let items = [];
+        if (isPOS && Array.isArray(order.items)) {
+          items = order.items.map(item => ({
+            name: item.name,
+            quantity: item.quantity || 1,
+            price: item.unitPrice || item.price || 0
+          }));
+        } else if (isBreakfast && Array.isArray(order.breakfasts)) {
+          items = order.breakfasts.map((breakfast, index) => ({
+            name: `Desayuno #${index + 1}`,
+            quantity: 1,
+            price: 15000
+          }));
+        } else if (Array.isArray(order.meals)) {
+          items = order.meals.map((meal, index) => ({
+            name: `Almuerzo #${index + 1}`,
+            quantity: 1,
+            price: 18000
+          }));
+        }
+
+        // Calcular total
+        const total = order.total || items.reduce((sum, item) => sum + (item.quantity * item.price), 0);
+
+        // Llamar a la MISMA función de CajaPOS
+        await printReceiptFromCajaPOS({
+          id: order.id,
+          date: new Date(fecha),
+          items,
+          total,
+          paymentMethod,
+          cashReceived,
+          changeGiven,
+          note,
+          orderType: orderTypeNormalized?.split('_')[0] || (isBreakfast ? 'desayuno' : 'almuerzo'),
+          orderTypeNormalized,
+          serviceType,
+          tableNumber,
+          takeaway
+        }, false); // false = no abrir caja registradora en reimpresiones
+
+        setSuccessMessage('✅ Recibo impreso exitosamente');
+        setTimeout(() => setSuccessMessage(''), 3000);
+
+      } catch (error) {
+        console.error('Error imprimiendo recibo:', error);
+        setErrorMessage(`❌ Error al imprimir: ${error.message}`);
+        setTimeout(() => setErrorMessage(''), 5000);
       }
+    };
+
+    // Función de impresión EXACTA de CajaPOS
+    const printReceiptFromCajaPOS = async ({ id, date, items, total, paymentMethod, cashReceived, changeGiven, note, orderType, orderTypeNormalized, serviceType, tableNumber, takeaway }, openCashDrawer = false) => {
+      const fecha = date.toLocaleString('es-CO');
+      const kind = (orderTypeNormalized?.split('_')[0] || orderType || '').toLowerCase();
+      const svc = (orderTypeNormalized?.split('_')[1] || serviceType || (tableNumber ? 'mesa' : (takeaway ? 'llevar' : ''))).toLowerCase();
+      const cap = (s) => s ? s.charAt(0).toUpperCase()+s.slice(1) : '';
+      const tipoLabel = `${cap(kind)} ${svc ? cap(svc) : ''}`.trim();
+
+      // Generar recibo de texto para impresora térmica (IDÉNTICO AL WEB)
+      const generateThermalReceipt = () => {
+        let receipt = '';
+        
+        // Comandos ESC/POS para centrar texto y configurar impresión
+        const ESC = '\x1B';
+        const GS = '\x1D';
+        
+        // Inicializar impresora
+        receipt += ESC + '@'; // Inicializar
+        
+        // El logo se imprime como imagen separadamente
+        // Después del logo, agregar el título centrado
+        receipt += ESC + 'a' + '\x01'; // Centrar texto
+        receipt += ESC + '!' + '\x18'; // Texto doble altura y ancho
+        receipt += 'Cocina Casera\n';
+        receipt += ESC + '!' + '\x00'; // Texto normal
+        receipt += '(Uso interno - No es factura DIAN)\n';
+        receipt += '\n';
+        
+        // Línea divisoria
+        receipt += ESC + 'a' + '\x00'; // Alinear izquierda
+        receipt += '================================\n';
+        
+        // Información del pedido (igual al web)
+        receipt += `Tipo: ${tipoLabel}\n`;
+        if (tableNumber) receipt += `Mesa: ${tableNumber}\n`;
+        receipt += `Fecha: ${fecha}\n`;
+        if (note) receipt += `Nota: ${note}\n`;
+        receipt += '================================\n';
+        
+        // Items del pedido (formato igual al web)
+        receipt += 'Items:\n';
+        
+        items.forEach(item => {
+          const qty = Number(item.quantity || 0);
+          const unit = Number(item.price || 0);
+          const lineTotal = qty * unit;
+          
+          // Nombre del item en negrita
+          receipt += ESC + '!' + '\x08'; // Negrita
+          receipt += `${item.name}\n`;
+          receipt += ESC + '!' + '\x00'; // Normal
+          
+          // Cantidad y precio con alineación
+          const qtyLine = `  ${qty}x $${unit.toLocaleString('es-CO')}`;
+          const totalText = `$${lineTotal.toLocaleString('es-CO')}`;
+          const spaces = ' '.repeat(Math.max(1, 32 - qtyLine.length - totalText.length));
+          receipt += `${qtyLine}${spaces}${totalText}\n`;
+        });
+        
+        receipt += '================================\n';
+        
+        // Totales (formato igual al web)
+        receipt += ESC + '!' + '\x08'; // Negrita
+        receipt += `Total: $${total.toLocaleString('es-CO')}\n`;
+        receipt += ESC + '!' + '\x00'; // Normal
+        receipt += `Pago: ${paymentMethod.charAt(0).toUpperCase() + paymentMethod.slice(1)}\n`;
+        if (paymentMethod === 'efectivo') {
+          receipt += `Recibido: $${(cashReceived || 0).toLocaleString('es-CO')}\n`;
+          receipt += `Vueltos: $${(changeGiven || 0).toLocaleString('es-CO')}\n`;
+        }
+        
+        receipt += '================================\n';
+        
+        // Mensaje de agradecimiento (centrado como web)
+        receipt += ESC + 'a' + '\x01'; // Centrar
+        receipt += ESC + '!' + '\x08'; // Negrita
+        receipt += '¡Gracias por su compra!\n';
+        receipt += ESC + '!' + '\x00'; // Normal
+        receipt += 'Te esperamos mañana con un\n';
+        receipt += 'nuevo menú.\n';
+        receipt += 'Escríbenos al 301 6476916\n';
+        receipt += 'Calle 133#126c-09\n';
+        receipt += '\n';
+        
+        // QR Code texto (igual al web)
+        receipt += 'Escanea este código QR para\n';
+        receipt += 'unirte a nuestro canal de\n';
+        receipt += 'WhatsApp y recibir nuestro\n';
+        receipt += 'menú diario:\n';
+        receipt += '\n';
+        
+        // Generar QR code nativo
+        receipt += GS + '(k' + '\x04' + '\x00' + '\x31' + '\x41' + '\x32' + '\x00'; // QR setup
+        receipt += GS + '(k' + '\x03' + '\x00' + '\x31' + '\x43' + '\x08'; // QR size 8
+        receipt += GS + '(k' + '\x03' + '\x00' + '\x31' + '\x45' + '\x30'; // QR error correction
+        
+        // Datos del QR (WhatsApp - igual al web)
+        const qrData = 'https://wa.me/573016476916?text=Hola%20quiero%20el%20menú';
+        const qrLength = qrData.length + 3;
+        const qrLenLow = qrLength % 256;
+        const qrLenHigh = Math.floor(qrLength / 256);
+        receipt += GS + '(k' + String.fromCharCode(qrLenLow, qrLenHigh) + '\x00' + '\x31' + '\x50' + '\x30' + qrData;
+        receipt += GS + '(k' + '\x03' + '\x00' + '\x31' + '\x51' + '\x30'; // Imprimir QR
+        
+        receipt += '\n\n\n';
+        
+        // Cortar papel
+        receipt += GS + 'V' + '\x41' + '\x03'; // Corte parcial
+        
+        return receipt;
+      };
+
+      // Función para convertir imagen a base64
+      const getLogoBase64 = async () => {
+        try {
+          const response = await fetch('/logo.png');
+          const blob = await response.blob();
+          return new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              const base64 = reader.result.split(',')[1]; // Remover prefijo data:image/png;base64,
+              resolve(base64);
+            };
+            reader.readAsDataURL(blob);
+          });
+        } catch (error) {
+          console.warn('No se pudo cargar el logo:', error);
+          return null;
+        }
+      };
+
+      // Imprimir (EXACTO A CajaPOS)
+      const currentPrinterIp = localStorage.getItem('printerIp') || '192.168.1.100';
+      const currentPrinterPort = parseInt(localStorage.getItem('printerPort')) || 9100;
+      
+      console.log(`🖨️ Mesas: Intentando imprimir en ${currentPrinterIp}:${currentPrinterPort}`);
+      
+      const thermalData = generateThermalReceipt();
+      const logoBase64 = await getLogoBase64();
+      
+      if (logoBase64) {
+        // Usar la nueva función con imagen
+        await PrinterPlugin.printWithImage({
+          ip: currentPrinterIp,
+          port: currentPrinterPort,
+          data: thermalData,
+          imageBase64: logoBase64
+        });
+      } else {
+        // Usar función básica sin imagen
+        await PrinterPlugin.printTCP({
+          ip: currentPrinterIp,
+          port: currentPrinterPort,
+          data: thermalData
+        });
+      }
+      console.log('✅ Mesas: Recibo impreso en impresora térmica');
     };
 
   // Catálogos almuerzo

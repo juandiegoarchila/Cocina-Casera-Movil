@@ -77,9 +77,9 @@ import { calculateBreakfastPrice } from '../../utils/BreakfastLogic';
 import PaymentSplitEditor from '../common/PaymentSplitEditor';
 import { summarizePayments, sumPaymentsByMethod, defaultPaymentsForOrder } from '../../utils/payments';
 import QRCode from 'qrcode';
-import PrinterPlugin from '../../plugins/PrinterPlugin.ts';
 import { db } from '../../config/firebase';
 import { collection, onSnapshot, updateDoc, doc, getDoc, query, where, getDocs, addDoc, serverTimestamp, increment } from 'firebase/firestore';
+import PrinterPlugin from '../../plugins/PrinterPlugin.ts';
 import {
   ArrowDownTrayIcon,
   ChevronLeftIcon,
@@ -197,61 +197,48 @@ const getExcludedSides = (meal, allSides) => {
   return [];
 };
 
-// Función para imprimir recibo de domicilio (idéntica a la de InteraccionesPedidos.js)
+// Función para imprimir recibo de domicilio (con soporte para impresora térmica + fallback web)
 const handlePrintDeliveryReceipt = async (order, allSides = []) => {
-  // Intentar imprimir de forma nativa vía PrinterPlugin (sin previsualización)
-  try {
-    const isBreakfast = order.type === 'breakfast';
-    const pago = order.payment || order.paymentMethod || 'N/A';
-    const totalValue = isBreakfast ? calculateCorrectBreakfastTotal(order) : order.total || 0;
-    const fmt = (v) => (Number(v)||0).toLocaleString('es-CO', { style: 'currency', currency: 'COP', maximumFractionDigits: 0 });
-    const total = fmt(totalValue);
-    const now = new Date();
-    const fecha = now.toLocaleDateString('es-CO') + ' ' + now.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
-
-    const ESC = '\x1B';
-    let receipt = '';
-    receipt += ESC + '@';
-    receipt += ESC + 'a' + '\x01';
-    receipt += ESC + '!' + '\x18';
-    receipt += 'Cocina Casera\n';
-    receipt += ESC + '!' + '\x00';
-    receipt += fecha + '\n';
-    receipt += '================================\n';
-    receipt += `Tipo: ${isBreakfast ? 'Desayuno' : 'Almuerzo'}\n`;
-    receipt += '--------------------------------\n';
-
-    // Items simplificados
-    const meals = Array.isArray(order.meals) ? order.meals : (Array.isArray(order.breakfasts) ? order.breakfasts : []);
-    meals.forEach((m) => {
-      const name = m.name || m.principle?.[0]?.name || 'Item';
-      const price = m.price || m.unitPrice || 0;
-      const qty = m.quantity || 1;
-      receipt += `${name}\n`;
-      receipt += `${qty} x ${fmt(price)}\n`;
-    });
-
-    receipt += '--------------------------------\n';
-    receipt += `Total: ${total}\n`;
-    receipt += `Pago: ${pago}\n`;
-    receipt += '\n\n';
-
-    const ip = localStorage.getItem('printerIp') || '192.168.1.100';
-    const port = parseInt(localStorage.getItem('printerPort')) || 9100;
-    try {
-      await PrinterPlugin.printTCP({ ip, port, data: receipt });
-      console.log('Recibo de domicilio impreso vía TCP', ip, port);
-    } catch (err) {
-      console.warn('Fallo impresión nativa domicilio:', err);
-      setErrorMessage && setErrorMessage('Fallo impresión nativa: ' + (err?.message || String(err)));
+  const isBreakfast = order.type === 'breakfast';
+  const pago = order.payment || order.paymentMethod || 'N/A';
+  
+  // Calcular el total correcto para desayunos
+  const totalValue = isBreakfast ? calculateCorrectBreakfastTotal(order) : order.total || 0;
+  const total = totalValue.toLocaleString('es-CO') || 'N/A';
+  
+  const tipo = isBreakfast ? 'Desayuno' : 'Almuerzo';
+  const address = (isBreakfast ? order.breakfasts?.[0]?.address : order.meals?.[0]?.address) || order.address || {};
+  const direccion = address.address || '';
+  const telefono = address.phoneNumber || '';
+  const barrio = address.neighborhood || '';
+  const detalles = address.details || '';
+  const now = new Date();
+  const fecha = now.toLocaleDateString('es-CO') + ' ' + now.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+  
+  // Obtener la hora de entrega usando la misma lógica que en la tabla
+  const timeValue = order.meals?.[0]?.time || order.breakfasts?.[0]?.time || order.time || null;
+  let deliveryTime = '';
+  
+  // timeValue puede ser: string, {name}, Firestore Timestamp, Date, o null
+  if (typeof timeValue === 'string' && timeValue.trim()) {
+    deliveryTime = timeValue;
+  } else if (timeValue instanceof Date) {
+    deliveryTime = timeValue.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+  } else if (timeValue && typeof timeValue === 'object') {
+    // Firestore Timestamp tiene toDate(); también aceptamos { name }
+    if (typeof timeValue.toDate === 'function') {
+      try {
+        const d = timeValue.toDate();
+        deliveryTime = d.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+      } catch (e) {
+        deliveryTime = timeValue.name || '';
+      }
+    } else if (timeValue.name && typeof timeValue.name === 'string') {
+      deliveryTime = timeValue.name;
     }
-    return;
-  } catch (err) {
-    console.error('Error en handlePrintDeliveryReceipt (nat):', err);
-    setErrorMessage && setErrorMessage('Error imprimiendo: ' + (err?.message || String(err)));
-    return;
   }
-  // Nota: el código histórico de previsualización queda abajo como referencia pero no se ejecuta.
+
+  let resumen = '';
   if (!isBreakfast && Array.isArray(order.meals)) {
     resumen += `<div style='font-weight:bold;margin-bottom:4px;'>✅ Resumen del Pedido</div>`;
     resumen += `<div>🍽 ${order.meals.length} almuerzos en total</div>`;
@@ -701,61 +688,838 @@ const handlePrintDeliveryReceipt = async (order, allSides = []) => {
     });
   };
 
-  // Generar el código QR y luego abrir la ventana de impresión
-  generateQRCode().then(qrUrl => {
-    qrCodeDataUrl = qrUrl;
+  // Config IP/puerto accesible para try/catch
+  const currentPrinterIp = (typeof localStorage !== 'undefined' && localStorage.getItem('printerIp')) || '192.168.1.100';
+  const currentPrinterPort = (typeof localStorage !== 'undefined' && parseInt(localStorage.getItem('printerPort'))) || 9100;
+
+  // Intentar impresión térmica primero
+  try {
     
-    win.document.write(`
-      <html><head><title>Recibo Domicilio</title>
-      <style>
-        body { font-family: monospace; font-size: 14px; margin: 0; padding: 0 10px; }
-        h2 { margin: 5px 0 8px 0; font-size: 18px; text-align: center; }
-        .line { border-bottom: 2px solid #000; margin: 10px 0; height: 0; }
-        .qr-container { text-align: center; margin-top: 15px; }
-        .qr-text { font-size: 12px; margin-bottom: 5px; text-align: center; }
-        .logo { text-align: center; margin-bottom: 8px; }
-        .thanks { text-align: center; margin-top: 16px; font-weight: bold; }
-        .contact { text-align: center; margin-top: 8px; }
-        div { padding-left: 5px; padding-right: 5px; }
-      </style>
-      </head><body>
-      <div class='logo'>
-        <img src="/logo.png" alt="Logo" style="width:100px; height:auto; display:block; margin:0 auto; filter:brightness(0) contrast(1.5); image-rendering: crisp-edges; -webkit-print-color-adjust: exact; print-color-adjust: exact;" />
-        <h2>Cocina Casera</h2>
-        <div style='text-align:center; font-size:12px; color:#000; margin-top:5px; font-weight:bold;'>(Uso interno - No es factura DIAN)</div>
-      </div>
-      <div class='line'></div>
-      <div><b>Tipo:</b> ${tipo}</div>
-      <div><b>Pago:</b> ${pago}</div>
-      <div><b>Total:</b> <strong>$${total}</strong></div>
-      <div><b>Fecha:</b> ${fecha}</div>
-      ${deliveryTime ? `<div><b>Entrega:</b> ${deliveryTime}</div>` : ''}
-      <div class='line'></div>
-      <div><b>Dirección:</b> <strong>${direccion}</strong></div>
-      <div><b>Barrio:</b> <strong>${barrio}</strong></div>
-      <div><b>Teléfono:</b> <strong>${telefono}</strong></div>
-      <div><b>Detalles:</b> ${detalles}</div>
-      <div class='line'></div>
-      ${resumen}
-      <div class='line'></div>
-      <div class='thanks'>Gracias por pedir en Cocina Casera</div>
-      <div class='contact'>Te esperamos mañana con un nuevo menú.<br>Escríbenos al <strong>301 6476916</strong><br><strong>Calle 133#126c-09</strong></div>
+    // ===============================
+    // FORMATO MEJORADO DEL TICKET DE DOMICILIO
+    // ===============================
+    
+    // Helper para dividir la dirección en dos líneas legibles en 58mm
+    const formatAddressForTicket = (addr) => {
+      const text = (addr || '').toString().trim();
+      if (!text) return { line1: '', line2: '' };
+      const lower = text.toLowerCase();
+      if (lower.includes(' bis ')) {
+        const idx = lower.indexOf(' bis ');
+        return { line1: text.slice(0, idx).trim(), line2: text.slice(idx + 1).trim() };
+      }
+      if (text.includes(' # ')) {
+        const idx = text.indexOf(' # ');
+        return { line1: text.slice(0, idx).trim(), line2: text.slice(idx + 1).trim() };
+      }
+      if (text.includes(' No. ')) {
+        const idx = text.indexOf(' No. ');
+        return { line1: text.slice(0, idx).trim(), line2: text.slice(idx + 1).trim() };
+      }
+      if (text.includes(' N° ')) {
+        const idx = text.indexOf(' N° ');
+        return { line1: text.slice(0, idx).trim(), line2: text.slice(idx + 1).trim() };
+      }
+      if (text.length > 28) {
+        const cut = text.lastIndexOf(' ', 28);
+        if (cut > 10) return { line1: text.slice(0, cut).trim(), line2: text.slice(cut + 1).trim() };
+      }
+      return { line1: text, line2: '' };
+    };
+
+    // Construir LOGO como imagen ESC/POS raster (centrado) - desactivado por defecto.
+    // Puedes activar el raster poniendo localStorage.setItem('useRasterLogo','1')
+    let logoRaster = '';
+    const enableRasterLogo = (typeof localStorage !== 'undefined' && localStorage.getItem('useRasterLogo') === '1');
+    if (enableRasterLogo) {
+      try {
+        const toMonochromeRaster = async (url, targetWidth = 240) => {
+          const resp = await fetch(url);
+          const blob = await resp.blob();
+          const bmp = await createImageBitmap(blob);
+          const ratio = Math.min(targetWidth / bmp.width, targetWidth / bmp.height);
+          const w = Math.max(8, Math.floor(bmp.width * ratio));
+          const h = Math.max(8, Math.floor(bmp.height * ratio));
+          const canvas = document.createElement('canvas');
+          canvas.width = w; canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#FFFFFF';
+          ctx.fillRect(0,0,w,h);
+          // Dibuja imagen centrada
+          ctx.drawImage(bmp, 0, 0, w, h);
+          const img = ctx.getImageData(0,0,w,h);
+          const bytesPerRow = Math.ceil(w / 8);
+          const data = new Uint8Array(bytesPerRow * h);
+          const threshold = 180; // umbral para B/N
+          for (let y=0; y<h; y++) {
+            for (let x=0; x<w; x++) {
+              const i = (y*w + x) * 4;
+              const r = img.data[i], g = img.data[i+1], b = img.data[i+2];
+              const lum = 0.299*r + 0.587*g + 0.114*b;
+              const byteIndex = y*bytesPerRow + (x >> 3);
+              const bit = 7 - (x & 7);
+              if (lum < threshold) data[byteIndex] |= (1 << bit);
+            }
+          }
+          // ESC/POS raster: GS v 0 m xL xH yL yH + data
+          const GS = '\x1D';
+          const m = '\x00';
+          const xL = String.fromCharCode(bytesPerRow & 0xFF);
+          const xH = String.fromCharCode((bytesPerRow >> 8) & 0xFF);
+          const yL = String.fromCharCode(h & 0xFF);
+          const yH = String.fromCharCode((h >> 8) & 0xFF);
+          let out = '';
+          // centrar
+          out += '\x1B' + 'a' + '\x01';
+          out += GS + 'v' + '0' + m + xL + xH + yL + yH;
+          // añadir bytes binarios
+          out += Array.from(data).map(n => String.fromCharCode(n)).join('');
+          out += '\n\n';
+          // volver a izquierda
+          out += '\x1B' + 'a' + '\x00';
+          return out;
+        };
+        logoRaster = await toMonochromeRaster('/logo.png', 240);
+      } catch (e) {
+        console.warn('No se pudo preparar logo raster:', e);
+        logoRaster = '';
+      }
+    }
+
+    // Función para generar el recibo térmico con formato correcto
+    const generateThermalReceipt = () => {
+      const ESC = '\x1B';
+      const GS = '\x1D';
+      const SEP = '------------------------------------------------\n'; // 48 guiones
+
+      // Sanitizador para evitar caracteres problemáticos en Android/ESC-POS
+      const forceAsciiAccents = typeof localStorage !== 'undefined'
+        ? (localStorage.getItem('forceAsciiTicket') === '1')
+        : true; // activado por defecto
+
+      const stripAccents = (s) => String(s || '')
+        .replace(/[ÁÀÂÃÄ]/g, 'A')
+        .replace(/[áàâãä]/g, 'a')
+        .replace(/[ÉÈÊË]/g, 'E')
+        .replace(/[éèêë]/g, 'e')
+        .replace(/[ÍÌÎÏ]/g, 'I')
+        .replace(/[íìîï]/g, 'i')
+        .replace(/[ÓÒÔÕÖ]/g, 'O')
+        .replace(/[óòôõö]/g, 'o')
+        .replace(/[ÚÙÛÜ]/g, 'U')
+        .replace(/[úùûü]/g, 'u')
+        .replace(/Ñ/g, 'N')
+        .replace(/ñ/g, 'n')
+        .replace(/Ç/g, 'C')
+        .replace(/ç/g, 'c');
+
+      const sanitize = (s) => {
+        let out = String(s || '')
+          .replace(/[\u00A0\u202F]/g, ' ') // NBSP/espacios finos
+          .replace(/[•]/g, '*')
+          .replace(/[–—]/g, '-')
+          .replace(/[“”]/g, '"')
+          .replace(/[’']/g, "'");
+        if (forceAsciiAccents) out = stripAccents(out);
+        return out;
+      };
+
+      let receipt = '';
       
-      <div class='qr-container'>
-        <div class='qr-text'>Escanea este código QR para unirte a nuestro canal de WhatsApp<br>y recibir nuestro menú diario:</div>
-        ${qrCodeDataUrl ? `<img src="${qrCodeDataUrl}" width="150" height="150" alt="QR Code" />` : ''}
-      </div>
-      <br><br>
-      </body></html>
-    `);
+      // Inicializar impresora
+      receipt += ESC + '@'; // Inicializar
+  // Asegurar codepage español (Windows-1252) para tildes/ñ
+  receipt += ESC + 't' + '\x10';
+  // Resetear márgenes y ancho de área de impresión (80mm ~ 576 dots)
+  receipt += '\x1D' + 'L' + '\x00' + '\x00'; // GS L nL nH -> margen izquierdo 0
+  receipt += '\x1D' + 'W' + '\x40' + '\x02'; // GS W nL nH -> ancho 0x0240 = 576
+      
+      // ===============================
+      // ENCABEZADO (después del logo)
+      // ===============================
+  receipt += ESC + 'a' + '\x01'; // Centrar texto
+  // Si está habilitado, insertamos el logo raster aquí; por defecto queda desactivado
+  if (logoRaster) receipt += logoRaster;
+      receipt += ESC + '!' + '\x18'; // Texto doble altura y ancho
+    receipt += sanitize('Cocina Casera') + '\n';
+      receipt += ESC + '!' + '\x00'; // Texto normal
+    receipt += sanitize('(Uso interno - No es factura DIAN)') + '\n';
+      receipt += '\n';
+      
+  // ===============================
+  // INFORMACIÓN DEL PEDIDO (formato similar al ticket ejemplo)
+  // ===============================
+  receipt += ESC + 'a' + '\x00'; // Alinear izquierda
+  const fechaClean = sanitize(String(fecha || '')
+    .replace(/a\.[\s\u00A0\u202F]*m\./ig, 'a. m.')
+    .replace(/p\.[\s\u00A0\u202F]*m\./ig, 'p. m.'));
+  const entregaClean = sanitize(deliveryTime || 'lo más pronto posible');
+  receipt += sanitize(`Tipo: ${tipo}`) + '\n';
+  receipt += sanitize(`Pago: ${pago}`) + '\n';
+  receipt += sanitize(`Total: $${total}`) + '\n';
+  receipt += `Fecha: ${fechaClean}\n`;
+  receipt += `Entrega: ${entregaClean}\n`;
+  receipt += '\n';
+      
+      // ===============================
+      // INFORMACIÓN DE ENTREGA
+      // ===============================
+  receipt += ESC + '!' + '\x00'; // Normal
+  const addrLines = formatAddressForTicket(direccion);
+  receipt += sanitize(`Dirección: ${addrLines.line1 || 'N/A'}`) + '\n';
+  if (addrLines.line2) receipt += sanitize(`           ${addrLines.line2}`) + '\n';
+  if (barrio) receipt += sanitize(`Barrio: ${barrio}`) + '\n';
+  receipt += sanitize(`Teléfono: ${telefono || 'N/A'}`) + '\n';
+  receipt += sanitize(`Detalles: ${detalles || ''}`) + '\n';
+  receipt += '\n';
+      
+  // ===============================
+  // RESUMEN DEL PEDIDO
+  // ===============================
+  receipt += SEP;
+  receipt += ESC + 'a' + '\x01';
+  receipt += ESC + '!' + '\x08'; // Negrita
+  receipt += sanitize('RESUMEN DEL PEDIDO') + '\n';
+  receipt += ESC + '!' + '\x00'; // Normal
+  receipt += ESC + 'a' + '\x00';
+  receipt += SEP;
+      
+      if (!isBreakfast && Array.isArray(order.meals)) {
+  receipt += sanitize(`${order.meals.length} almuerzos en total`) + '\n';
+  receipt += SEP;
+        
+        // Crear agrupación simplificada para térmica
+        const groupedMeals = [];
+        order.meals.forEach((meal, index) => {
+          const existingGroup = groupedMeals.find(group => 
+            areMealsIdentical(group.meal, meal)
+          );
+          
+          if (existingGroup) {
+            existingGroup.count++;
+            existingGroup.indices.push(index + 1);
+          } else {
+            groupedMeals.push({ 
+              meal, 
+              count: 1, 
+              indices: [index + 1] 
+            });
+          }
+        });
+
+        // Determinar comunes
+        const allMeals = groupedMeals.map(g => g.meal);
+        const first = allMeals[0] || {};
+        const every = (pred) => allMeals.every(pred);
+        const intersection = (arrs) => {
+          if (!arrs.length) return [];
+          return arrs.reduce((acc, curr) => acc.filter(x => curr.includes(x)));
+        };
+
+        const common = {};
+        if (every(m => (m.soup?.name || '') === (first.soup?.name || '') && m.soup?.name && m.soup.name !== 'Sin sopa')) common.soup = first.soup.name;
+        if (every(m => (m.soupReplacement?.name || '') === (first.soupReplacement?.name || '')) && first.soupReplacement?.name) common.soupReplacement = first.soupReplacement.name;
+        if (every(m => (m.principleReplacement?.name || '') === (first.principleReplacement?.name || '')) && first.principleReplacement?.name) common.principleReplacement = first.principleReplacement.name;
+        if (every(m => (m.protein?.name || '') === (first.protein?.name || '')) && first.protein?.name) common.protein = first.protein.name;
+        if (every(m => (m.drink?.name || '') === (first.drink?.name || '')) && first.drink?.name) common.drink = (first.drink.name === 'Juego de mango' ? 'Jugo de mango' : first.drink.name);
+        if (every(m => m.cutlery === first.cutlery)) common.cutlery = !!first.cutlery;
+        if (every(m => Array.isArray(m.principle))) {
+          const sets = allMeals.map(m => (m.principle || []).map(p => p.name).filter(n => n && !/remplazo/i.test(n)));
+          const inter = intersection(sets);
+          if (inter.length) common.principle = inter;
+        }
+        if (every(m => Array.isArray(m.sides))) {
+          const sets = allMeals.map(m => (m.sides || []).map(s => s.name).filter(Boolean));
+          const inter = intersection(sets);
+          if (inter.length) common.sides = inter;
+        }
+
+        // Precio total y encabezado
+        const totalPrice = order.total || groupedMeals.reduce((sum, g) => sum + (Number(g.meal.price || 0) * g.count), 0);
+  // Evitar caracteres Unicode problemáticos: usar ASCII puro
+  receipt += sanitize(`${order.meals.length} Almuerzos - $${Number(totalPrice || 0).toLocaleString('es-CO')} (${pago})`) + '\n';
+
+        // Imprimir comunes
+  if (common.soup) receipt += sanitize(`* ${common.soup}`) + '\n';
+  if (common.soupReplacement) receipt += sanitize(`* ${common.soupReplacement} (por sopa)`) + '\n';
+        if (Array.isArray(common.principle) && common.principle.length) {
+          const ptxt = common.principle.join(', ');
+          const mixto = common.principle.length > 1 ? ' (mixto)' : '';
+          receipt += sanitize(`* ${ptxt}${mixto}`) + '\n';
+        }
+  if (common.principleReplacement) receipt += sanitize(`* ${common.principleReplacement} (por principio)`) + '\n';
+  if (common.protein) receipt += sanitize(`* ${common.protein}`) + '\n';
+  if (common.drink) receipt += sanitize(`* ${common.drink}`) + '\n';
+  receipt += sanitize(`Cubiertos: ${common.cutlery ? 'Si' : 'No'}`) + '\n';
+  if (Array.isArray(common.sides) && common.sides.length) receipt += sanitize(`Acompanamientos: ${common.sides.join(', ')}`) + '\n';
+
+        // Diferencias
+        if (groupedMeals.length > 1) {
+          receipt += '\n' + sanitize('DIFERENCIAS:') + '\n';
+          groupedMeals.forEach(group => {
+            const m = group.meal;
+            const idxText = group.indices.join(', ');
+            receipt += sanitize(`* Almuerzo ${idxText}:`) + '\n';
+            const diffs = [];
+            if ((m.soup?.name && m.soup.name !== common.soup && m.soup.name !== 'Sin sopa') || (m.soupReplacement?.name && m.soupReplacement.name !== common.soupReplacement)) {
+              if (m.soupReplacement?.name) diffs.push(`${m.soupReplacement.name} (por sopa)`);
+              else if (m.soup?.name && m.soup.name !== 'Sin sopa') diffs.push(m.soup.name);
+            }
+            const mPrinciples = (m.principle || []).map(p => p.name).filter(n => n && !/remplazo/i.test(n));
+            if (Array.isArray(common.principle)) {
+              const diffP = mPrinciples.filter(x => !common.principle.includes(x));
+              if (diffP.length) diffs.push(`${diffP.join(', ')}${diffP.length > 1 ? ' (mixto)' : ''}`);
+            } else if (mPrinciples.length) {
+              diffs.push(`${mPrinciples.join(', ')}${mPrinciples.length > 1 ? ' (mixto)' : ''}`);
+            }
+            if (m.principleReplacement?.name && m.principleReplacement.name !== common.principleReplacement) diffs.push(`${m.principleReplacement.name} (por principio)`);
+            const specialRice = Array.isArray(m.principle) && m.principle.some(p => ['Arroz con pollo','Arroz paisa','Arroz tres carnes'].includes(p.name));
+            if (!specialRice) {
+              if (m.protein?.name && m.protein.name !== common.protein) diffs.push(m.protein.name);
+            }
+            if (Array.isArray(m.sides)) {
+              const sidesM = m.sides.map(s => sanitize(s.name)).filter(Boolean);
+              if (!Array.isArray(common.sides) || sidesM.join('|') !== common.sides.join('|')) {
+                if (sidesM.length) diffs.push(`Acompanamientos: ${sidesM.join(', ')}`);
+                const excluded = getExcludedSides(m, allSides);
+                if (excluded.length) diffs.push(`No incluir: ${excluded.join(', ')}`);
+              }
+            }
+            if (Array.isArray(m.additions) && m.additions.length) {
+              m.additions.forEach(a => diffs.push(`+ ${a.name}${a.protein ? ' (' + a.protein + ')' : ''} (${a.quantity || 1})`));
+            }
+            if (m.notes && m.notes.trim()) diffs.push(`Notas: ${sanitize(m.notes)}`);
+            if (diffs.length === 0) diffs.push('Sin diferencias');
+            diffs.forEach(d => { receipt += '  - ' + sanitize(d) + '\n'; });
+          });
+        }
+        
+      } else if (isBreakfast && Array.isArray(order.breakfasts)) {
+  receipt += sanitize(`${order.breakfasts.length} desayunos en total`) + '\n';
+  receipt += SEP;
+        
+  order.breakfasts.forEach((breakfast, index) => {
+          // Encabezado del desayuno
+          receipt += ESC + '!' + '\x01'; // Altura doble
+          receipt += `DESAYUNO ${index + 1}:\n`;
+          receipt += ESC + '!' + '\x00'; // Normal
+          
+          const bTotal = calculateBreakfastPrice({ ...breakfast, orderType: 'table' }, 3);
+          receipt += `1 Desayuno - $${bTotal.toLocaleString('es-CO')} (${pago})\n`;
+          receipt += '\n';
+          
+          if (breakfast.type) {
+            const typeName = typeof breakfast.type === 'string' ? breakfast.type : breakfast.type?.name || '';
+            receipt += sanitize(`* ${typeName}`) + '\n';
+          }
+          if (breakfast.broth) {
+            const brothName = typeof breakfast.broth === 'string' ? breakfast.broth : breakfast.broth?.name || '';
+            receipt += sanitize(`* ${brothName}`) + '\n';
+          }
+          if (breakfast.eggs) {
+            const eggsName = typeof breakfast.eggs === 'string' ? breakfast.eggs : breakfast.eggs?.name || '';
+            receipt += sanitize(`* ${eggsName}`) + '\n';
+          }
+          if (breakfast.riceBread) {
+            const riceBreadName = typeof breakfast.riceBread === 'string' ? breakfast.riceBread : breakfast.riceBread?.name || '';
+            receipt += sanitize(`* ${riceBreadName}`) + '\n';
+          }
+          if (breakfast.protein) {
+            const proteinName = typeof breakfast.protein === 'string' ? breakfast.protein : breakfast.protein?.name || '';
+            receipt += sanitize(`* ${proteinName}`) + '\n';
+          }
+          if (breakfast.drink) {
+            const drinkName = typeof breakfast.drink === 'string' ? breakfast.drink : breakfast.drink?.name || '';
+            receipt += sanitize(`* ${drinkName}`) + '\n';
+          }
+          
+          if (breakfast.additions && breakfast.additions.length > 0) {
+            receipt += sanitize('* Adiciones:') + '\n';
+            breakfast.additions.forEach(a => {
+              receipt += `  - ${a.name} (${a.quantity || 1})\n`;
+            });
+          }
+          
+          receipt += sanitize(`Cubiertos: ${breakfast.cutlery === true ? 'Si' : 'No'}`) + '\n';
+          
+          if (breakfast.notes && breakfast.notes.trim()) {
+            receipt += sanitize(`Notas: ${breakfast.notes}`) + '\n';
+          }
+          
+          // Separador entre desayunos si hay más de uno
+          if (index < order.breakfasts.length - 1) {
+            receipt += '................................\n';
+          }
+        });
+      }
+      
+  receipt += SEP;
+      
+      // ===============================
+      // MENSAJE FINAL
+      // ===============================
+  receipt += ESC + 'a' + '\x01'; // Centrar
+  receipt += '\n';
+  receipt += ESC + '!' + '\x08'; // Negrita
+  receipt += sanitize('Gracias por pedir en Cocina Casera') + '\n';
+  receipt += ESC + '!' + '\x00'; // Normal
+  receipt += sanitize('Te esperamos mañana con un') + '\n';
+  receipt += sanitize('nuevo menú.') + '\n';
+  receipt += SEP;
+  receipt += sanitize('Escríbenos al 301 6476916') + '\n';
+  receipt += sanitize('Calle 133#126c-09') + '\n';
+  receipt += SEP;
+      
+      // ===============================
+      // CÓDIGO QR
+      // ===============================
+  receipt += sanitize('Escanea este código QR para') + '\n';
+    receipt += sanitize('unirte a nuestro canal de') + '\n';
+    receipt += sanitize('WhatsApp y recibir nuestro') + '\n';
+  receipt += sanitize('menú diario:') + '\n';
+    receipt += '\n\n';
+      
+  // Generar QR code nativo (ESC/POS) para WhatsApp (centrado)
+  receipt += ESC + 'a' + '\x01'; // centrar
+  // Seleccionar modo de QR y tamaño
+  receipt += GS + '(k' + '\x04' + '\x00' + '\x31' + '\x41' + '\x32' + '\x00'; // Select model 2
+  receipt += GS + '(k' + '\x03' + '\x00' + '\x31' + '\x43' + '\x08'; // Module size 8
+  receipt += GS + '(k' + '\x03' + '\x00' + '\x31' + '\x45' + '\x30'; // Error correction L
+
+  const qrData = 'https://whatsapp.com/channel/0029VafyYdVAe5VskWujmK0C';
+  const qrLength = qrData.length + 3;
+  const pL = String.fromCharCode(qrLength & 0xff);
+  const pH = String.fromCharCode((qrLength >> 8) & 0xff);
+  // Store data
+  receipt += GS + '(k' + pL + pH + '\x31' + '\x50' + '\x30' + qrData;
+  // Print the QR
+  receipt += GS + '(k' + '\x03' + '\x00' + '\x31' + '\x51' + '\x30';
+  receipt += ESC + 'a' + '\x00'; // volver a izquierda
+      
+      receipt += '\n\n\n';
+      
+      // Cortar papel
+      receipt += GS + 'V' + '\x41' + '\x03'; // Corte parcial
+      
+      return sanitize(receipt);
+    };
+
+    // Función para convertir imagen a base64
+    const getLogoBase64 = async () => {
+      try {
+        const response = await fetch('/logo.png');
+        const blob = await response.blob();
+        const imgBitmap = await createImageBitmap(blob);
+
+        // Normalizar a lienzo cuadrado para que se vea circular correctamente
+        const size = 256; // px
+        const canvas = document.createElement('canvas');
+        canvas.width = size; canvas.height = size;
+        const ctx = canvas.getContext('2d');
+
+        // Fondo blanco
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, size, size);
+
+        // Recortar a círculo (máscara)
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(size/2, size/2, size/2 - 2, 0, Math.PI * 2);
+        ctx.closePath();
+        ctx.clip();
+
+        // Dibujar imagen centrada y contenida
+        const ratio = Math.min(size / imgBitmap.width, size / imgBitmap.height);
+        const w = imgBitmap.width * ratio;
+        const h = imgBitmap.height * ratio;
+        const x = (size - w) / 2;
+        const y = (size - h) / 2;
+        ctx.drawImage(imgBitmap, x, y, w, h);
+        ctx.restore();
+
+        const dataUrl = canvas.toDataURL('image/png');
+        const base64 = dataUrl.split(',')[1];
+        return base64;
+      } catch (error) {
+        console.warn('No se pudo cargar el logo:', error);
+        return null;
+      }
+    };
+
+    // Renderizar TODO el ticket como imagen (canvas) para evitar problemas de codificación y asegurar monoespaciado/alineación
+    const renderTicketCanvas = async () => {
+      const width = 576; // ancho típico 80mm
+      const margin = 24;
+      const inner = width - margin * 2;
+      const line = (ctx, y) => { ctx.fillStyle = '#000'; ctx.fillRect(margin, y, inner, 2); };
+      const makeCtx = (h) => {
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#FFF';
+        ctx.fillRect(0,0,width,h);
+        ctx.fillStyle = '#000';
+        return { canvas, ctx };
+      };
+      const wrapText = (ctx, text, x, y, maxWidth, lineHeight) => {
+        const words = (text || '').toString().split(/\s+/);
+        let lineStr = '';
+        const lines = [];
+        for (let n = 0; n < words.length; n++) {
+          const testLine = lineStr ? lineStr + ' ' + words[n] : words[n];
+          const metrics = ctx.measureText(testLine);
+          if (metrics.width > maxWidth && n > 0) {
+            lines.push(lineStr);
+            lineStr = words[n];
+          } else {
+            lineStr = testLine;
+          }
+        }
+        if (lineStr) lines.push(lineStr);
+        lines.forEach((l, i) => ctx.fillText(l, x, y + i * lineHeight));
+        return y + lines.length * lineHeight;
+      };
+      // 1) medir altura aproximada (simple): usamos un buffer alto y luego recortamos con toDataURL
+      const { canvas, ctx } = makeCtx(5000);
+      let y = 20;
+      // Fuentes
+      const titleFont = 'bold 36px monospace';
+      const subtitleFont = 'bold 20px monospace';
+      const normalFont = '24px monospace';
+      const smallFont = '20px monospace';
+
+      // Logo (si existe)
+      try {
+        const resp = await fetch('/logo.png');
+        const blob = await resp.blob();
+        const img = await createImageBitmap(blob);
+        const size = 140;
+        const cx = width / 2, cy = y + size / 2;
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(cx, cy, size / 2, 0, Math.PI * 2);
+        ctx.closePath();
+        ctx.clip();
+        ctx.drawImage(img, cx - size / 2, y, size, size);
+        ctx.restore();
+        y += size + 12;
+      } catch {}
+
+      // Encabezado
+      ctx.textAlign = 'center';
+      ctx.font = titleFont; y += 4; ctx.fillText('Cocina Casera', width/2, y); y += 10;
+      ctx.font = smallFont; y += 20; ctx.fillText('(Uso interno - No es factura DIAN)', width/2, y); y += 14;
+      // Separador
+      y += 10; line(ctx, y); y += 16;
+
+      // Info del pedido
+      ctx.textAlign = 'left';
+      ctx.font = normalFont;
+      const entregaTexto = deliveryTime || 'lo más pronto posible';
+      y = wrapText(ctx, `Tipo: ${tipo}`, margin, y, inner, 28) + 6;
+      y = wrapText(ctx, `Pago: ${pago}`, margin, y, inner, 28) + 6;
+      y = wrapText(ctx, `Total: $${total}`, margin, y, inner, 28) + 6;
+      y = wrapText(ctx, `Fecha: ${fecha}`, margin, y, inner, 28) + 6;
+      y = wrapText(ctx, `Entrega: ${entregaTexto}`, margin, y, inner, 28) + 12;
+
+      // Separador
+      line(ctx, y); y += 16;
+
+      // Dirección
+      const addrLines = formatAddressForTicket(direccion);
+      y = wrapText(ctx, `Dirección: ${addrLines.line1 || 'N/A'}`, margin, y, inner, 28) + 6;
+      if (addrLines.line2) { y = wrapText(ctx, `          ${addrLines.line2}`, margin, y, inner, 28) + 6; }
+      if (barrio) y = wrapText(ctx, `Barrio: ${barrio}`, margin, y, inner, 28) + 6;
+      y = wrapText(ctx, `Teléfono: ${telefono || 'N/A'}`, margin, y, inner, 28) + 6;
+      if (detalles) y = wrapText(ctx, `Detalles: ${detalles}`, margin, y, inner, 28) + 10;
+
+      // Separador
+      line(ctx, y); y += 18;
+
+      // Resumen
+      ctx.font = subtitleFont;
+      y = wrapText(ctx, 'Resumen del Pedido', margin, y, inner, 26) + 8;
+      ctx.font = normalFont;
+      y = wrapText(ctx, `${isBreakfast ? order.breakfasts.length : order.meals.length} ${isBreakfast ? 'desayunos' : 'almuerzos'} en total`, margin, y, inner, 28) + 10;
+
+      if (!isBreakfast && Array.isArray(order.meals)) {
+        // Duplicamos la lógica de comunes y diferencias simplificada
+        const groupedMeals = [];
+        order.meals.forEach((meal, index) => {
+          const existing = groupedMeals.find(g => areMealsIdentical(g.meal, meal));
+          if (existing) { existing.count++; existing.indices.push(index+1); }
+          else groupedMeals.push({ meal, count:1, indices:[index+1] });
+        });
+        const allMeals = groupedMeals.map(g => g.meal);
+        const first = allMeals[0] || {};
+        const every = (pred) => allMeals.every(pred);
+        const intersection = (arrs) => arrs.reduce((acc, cur) => acc.filter(x => cur.includes(x)), (arrs[0]||[]));
+        const common = {};
+        if (every(m => (m.soup?.name||'') === (first.soup?.name||'') && m.soup?.name && m.soup.name !== 'Sin sopa')) common.soup = first.soup.name;
+        if (every(m => (m.soupReplacement?.name||'') === (first.soupReplacement?.name||'')) && first.soupReplacement?.name) common.soupReplacement = first.soupReplacement.name;
+        if (every(m => (m.principleReplacement?.name||'') === (first.principleReplacement?.name||'')) && first.principleReplacement?.name) common.principleReplacement = first.principleReplacement.name;
+        if (every(m => (m.protein?.name||'') === (first.protein?.name||'')) && first.protein?.name) common.protein = first.protein.name;
+        if (every(m => (m.drink?.name||'') === (first.drink?.name||'')) && first.drink?.name) common.drink = (first.drink.name === 'Juego de mango' ? 'Jugo de mango' : first.drink.name);
+        if (every(m => m.cutlery === first.cutlery)) common.cutlery = !!first.cutlery;
+        if (every(m => Array.isArray(m.principle))) {
+          const sets = allMeals.map(m => (m.principle||[]).map(p=>p.name).filter(n=>n && !/remplazo/i.test(n)));
+          const inter = intersection(sets);
+          if (inter && inter.length) common.principle = inter;
+        }
+        if (every(m => Array.isArray(m.sides))) {
+          const sets = allMeals.map(m => (m.sides||[]).map(s=>s.name).filter(Boolean));
+          const inter = intersection(sets);
+          if (inter && inter.length) common.sides = inter;
+        }
+        const totalPrice = order.total || groupedMeals.reduce((sum, g) => sum + (Number(g.meal.price||0) * g.count), 0);
+        y = wrapText(ctx, `🍽 ${order.meals.length} Almuerzos – $${Number(totalPrice||0).toLocaleString('es-CO')} (${pago})`, margin, y, inner, 28) + 6;
+        if (common.soup) y = wrapText(ctx, `• ${common.soup}`, margin, y, inner, 28) + 4;
+        if (common.soupReplacement) y = wrapText(ctx, `• ${common.soupReplacement} (por sopa)`, margin, y, inner, 28) + 4;
+        if (Array.isArray(common.principle) && common.principle.length) {
+          const ptxt = common.principle.join(', ');
+          const mixto = common.principle.length > 1 ? ' (mixto)' : '';
+          y = wrapText(ctx, `• ${ptxt}${mixto}`, margin, y, inner, 28) + 4;
+        }
+        if (common.principleReplacement) y = wrapText(ctx, `• ${common.principleReplacement} (por principio)`, margin, y, inner, 28) + 4;
+        if (common.protein) y = wrapText(ctx, `• ${common.protein}`, margin, y, inner, 28) + 4;
+        if (common.drink) y = wrapText(ctx, `• ${common.drink}`, margin, y, inner, 28) + 4;
+        y = wrapText(ctx, `• Cubiertos: ${common.cutlery ? 'Sí' : 'No'}`, margin, y, inner, 28) + 4;
+        if (Array.isArray(common.sides) && common.sides.length) y = wrapText(ctx, `• Acompañamientos: ${common.sides.join(', ')}`, margin, y, inner, 28) + 6;
+        if (groupedMeals.length > 1) {
+          y += 6; ctx.font = subtitleFont; y = wrapText(ctx, 'Diferencias:', margin, y, inner, 26) + 6; ctx.font = normalFont;
+          groupedMeals.forEach(group => {
+            const m = group.meal; const idxText = group.indices.join(', ');
+            y = wrapText(ctx, `* Almuerzo ${idxText}:`, margin, y, inner, 28) + 4;
+            const diffs = [];
+            if ((m.soup?.name && m.soup.name !== common.soup && m.soup.name !== 'Sin sopa') || (m.soupReplacement?.name && m.soupReplacement.name !== common.soupReplacement)) {
+              if (m.soupReplacement?.name) diffs.push(`${m.soupReplacement.name} (por sopa)`);
+              else if (m.soup?.name && m.soup.name !== 'Sin sopa') diffs.push(m.soup.name);
+            }
+            const mPrinciples = (m.principle||[]).map(p=>p.name).filter(n=>n && !/remplazo/i.test(n));
+            if (Array.isArray(common.principle)) {
+              const diffP = mPrinciples.filter(x => !common.principle.includes(x));
+              if (diffP.length) diffs.push(`${diffP.join(', ')}${diffP.length>1?' (mixto)':''}`);
+            } else if (mPrinciples.length) diffs.push(`${mPrinciples.join(', ')}${mPrinciples.length>1?' (mixto)':''}`);
+            if (m.principleReplacement?.name && m.principleReplacement.name !== common.principleReplacement) diffs.push(`${m.principleReplacement.name} (por principio)`);
+            const specialRice = Array.isArray(m.principle) && m.principle.some(p => ['Arroz con pollo','Arroz paisa','Arroz tres carnes'].includes(p.name));
+            if (!specialRice) {
+              if (m.protein?.name && m.protein.name !== common.protein) diffs.push(m.protein.name);
+            }
+            if (Array.isArray(m.sides)) {
+              const sidesM = m.sides.map(s=>s.name).filter(Boolean);
+              if (!Array.isArray(common.sides) || sidesM.join('|') !== (common.sides||[]).join('|')) {
+                if (sidesM.length) diffs.push(`Acompañamientos: ${sidesM.join(', ')}`);
+                const excluded = getExcludedSides(m, allSides);
+                if (excluded.length) diffs.push(`No incluir: ${excluded.join(', ')}`);
+              }
+            }
+            if (Array.isArray(m.additions) && m.additions.length) m.additions.forEach(a => diffs.push(`+ ${a.name}${a.protein ? ' (' + a.protein + ')' : ''} (${a.quantity || 1})`));
+            if (m.notes && m.notes.trim()) diffs.push(`Notas: ${m.notes}`);
+            if (!diffs.length) diffs.push('Sin diferencias');
+            diffs.forEach(d => { y = wrapText(ctx, `  - ${d}`, margin, y, inner, 28) + 2; });
+            y += 4;
+          });
+        }
+      } else if (isBreakfast && Array.isArray(order.breakfasts)) {
+        order.breakfasts.forEach((b, idx) => {
+          ctx.font = subtitleFont; y = wrapText(ctx, `DESAYUNO ${idx+1}:`, margin, y, inner, 26) + 4; ctx.font = normalFont;
+          const bTotal = calculateBreakfastPrice({ ...b, orderType: 'table' }, 3);
+          y = wrapText(ctx, `🍽 1 Desayuno – $${bTotal.toLocaleString('es-CO')} (${pago})`, margin, y, inner, 28) + 6;
+          const pick = (v) => typeof v === 'string' ? v : (v?.name || '');
+          if (b.type) y = wrapText(ctx, `• ${pick(b.type)}`, margin, y, inner, 28) + 2;
+          if (b.broth) y = wrapText(ctx, `• ${pick(b.broth)}`, margin, y, inner, 28) + 2;
+          if (b.eggs) y = wrapText(ctx, `• ${pick(b.eggs)}`, margin, y, inner, 28) + 2;
+          if (b.riceBread) y = wrapText(ctx, `• ${pick(b.riceBread)}`, margin, y, inner, 28) + 2;
+          if (b.protein) y = wrapText(ctx, `• ${pick(b.protein)}`, margin, y, inner, 28) + 2;
+          if (b.drink) y = wrapText(ctx, `• ${pick(b.drink)}`, margin, y, inner, 28) + 2;
+          if (Array.isArray(b.additions) && b.additions.length) {
+            y = wrapText(ctx, '• Adiciones:', margin, y, inner, 28) + 2;
+            b.additions.forEach(a => { y = wrapText(ctx, `  - ${a.name} (${a.quantity || 1})`, margin, y, inner, 28) + 2; });
+          }
+          y = wrapText(ctx, `• Cubiertos: ${b.cutlery === true ? 'Sí' : 'No'}`, margin, y, inner, 28) + 2;
+          if (b.notes && b.notes.trim()) y = wrapText(ctx, `• Notas: ${b.notes}`, margin, y, inner, 28) + 2;
+          if (idx < order.breakfasts.length - 1) { y += 6; ctx.fillRect(margin, y, inner, 2); y += 10; }
+        });
+      }
+
+      // Separador
+      y += 8; line(ctx, y); y += 22;
+
+      // Mensaje final
+      ctx.textAlign = 'center';
+      ctx.font = subtitleFont; y = wrapText(ctx, 'Gracias por pedir en Cocina Casera', margin, y, inner, 26) + 4;
+      ctx.font = normalFont; y = wrapText(ctx, 'Te esperamos mañana con un', margin, y, inner, 28) + 2;
+      y = wrapText(ctx, 'nuevo menú.', margin, y, inner, 28) + 8;
+      y = wrapText(ctx, 'Escríbenos al 301 6476916', margin, y, inner, 28) + 2;
+      y = wrapText(ctx, 'Calle 133#126c-09', margin, y, inner, 28) + 12;
+
+      // QR
+      let qrUrl = '';
+      try { qrUrl = await generateQRCode(); } catch {}
+      if (qrUrl) {
+        const img = new Image();
+        await new Promise(res => { img.onload = res; img.onerror = res; img.src = qrUrl; });
+        const size = 280;
+        ctx.drawImage(img, (width - size)/2, y, size, size);
+        y += size + 8;
+      }
+
+      // Recortar y entregar canvas
+      const outCanvas = document.createElement('canvas');
+      outCanvas.width = width; outCanvas.height = y + 40; // margen inferior
+      const octx = outCanvas.getContext('2d');
+      octx.drawImage(canvas, 0, 0, width, y + 40, 0, 0, width, y + 40);
+      return outCanvas;
+    };
+
+    // Convertir canvas a ESC/POS raster (GS v 0) como string binario
+    const canvasToEscPosRaster = (canvas, { threshold = 180, align = 'left' } = {}) => {
+      const ESC = '\x1B';
+      const GS = '\x1D';
+      const ctx = canvas.getContext('2d');
+      const w = canvas.width; const h = canvas.height;
+      const img = ctx.getImageData(0, 0, w, h);
+      const bytesPerRow = Math.ceil(w / 8);
+      const data = new Uint8Array(bytesPerRow * h);
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const i = (y * w + x) * 4;
+          const r = img.data[i], g = img.data[i+1], b = img.data[i+2];
+          const lum = 0.299*r + 0.587*g + 0.114*b;
+          const byteIndex = y * bytesPerRow + (x >> 3);
+          const bit = 7 - (x & 7);
+          if (lum < threshold) data[byteIndex] |= (1 << bit); // negro = 1
+        }
+      }
+      const xL = String.fromCharCode(bytesPerRow & 0xff);
+      const xH = String.fromCharCode((bytesPerRow >> 8) & 0xff);
+      const yL = String.fromCharCode(h & 0xff);
+      const yH = String.fromCharCode((h >> 8) & 0xff);
+      let out = '';
+      // Inicial y alineación
+      out += ESC + '@';
+      if (align === 'center') out += ESC + 'a' + '\x01';
+      else if (align === 'right') out += ESC + 'a' + '\x02';
+      else out += ESC + 'a' + '\x00';
+      // Comando raster
+      out += GS + 'v' + '0' + '\x00' + xL + xH + yL + yH;
+      out += Array.from(data).map(n => String.fromCharCode(n)).join('');
+      // Restaurar alineación
+      out += ESC + 'a' + '\x00';
+      return out;
+    };
+
+    // Imprimir con logo
+  // Desactivar modo gráfico por defecto para evitar problemas de raster en algunos modelos.
+  // Solo se activa si explícitamente se define localStorage.useGraphicTicket = '1'.
+  const useGraphicTicket = (typeof localStorage !== 'undefined' && localStorage.getItem('useGraphicTicket') === '1');
+    if (useGraphicTicket) {
+      // Generar canvas del ticket y mandarlo como raster ESC/POS directo (sin usar printWithImage)
+      const ticketCanvas = await renderTicketCanvas();
+      const raster = canvasToEscPosRaster(ticketCanvas, { threshold: 180, align: 'left' });
+      const cut = '\x1D' + 'V' + '\x41' + '\x03'; // corte parcial
+      const feed = '\n\n\n';
+      await PrinterPlugin.printTCP({
+        ip: currentPrinterIp,
+        port: currentPrinterPort,
+        data: raster + feed + cut
+      });
+    } else {
+      // Camino anterior: texto ESC/POS + logo circular en encabezado
+      const thermalData = generateThermalReceipt();
+      const logoBase64 = await getLogoBase64();
+      if (logoBase64) {
+        await PrinterPlugin.printWithImage({ ip: currentPrinterIp, port: currentPrinterPort, data: thermalData, imageBase64: logoBase64 });
+      } else {
+        await PrinterPlugin.printTCP({ ip: currentPrinterIp, port: currentPrinterPort, data: thermalData });
+      }
+    }
     
+    console.log('✅ TablaPedidos: Recibo de domicilio impreso en impresora térmica');
+    
+    // Mostrar mensaje de éxito (opcional)
+    if (typeof window !== 'undefined' && window.alert) {
+      alert('✅ Recibo impreso correctamente');
+    }
+    
+    return; // Salir aquí después de imprimir exitosamente
+    
+  } catch (error) {
+    console.warn('⚠️ TablaPedidos: Fallo impresión térmica:', error);
+
+    // Fallback: impresión web con formato bonito (similar a imagen)
+    try {
+      qrCodeDataUrl = await generateQRCode();
+    } catch (e) {
+      // ignorar
+    }
+
+  const win = window.open('', 'PRINT', 'height=900,width=480');
+    const entregaTexto = deliveryTime || 'lo más pronto posible';
+    const htmlResumen = resumen || '';
+    const logoUrl = '/logo.png';
+    win.document.write(`
+      <html>
+        <head>
+          <title>Recibo</title>
+          <meta charset="utf-8" />
+          <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, 'Noto Sans', 'Helvetica Neue', sans-serif; margin: 0; padding: 16px; color: #111; }
+            .ticket { width: 360px; margin: 0 auto; }
+            .center { text-align: center; }
+            .muted { color: #555; font-size: 12px; }
+            .title { font-weight: 800; font-size: 18px; margin: 4px 0; }
+            .line { height: 1px; background:#e5e7eb; margin: 10px 0; }
+            .row { margin: 4px 0; }
+            .label { font-weight: 600; }
+            .qr { margin-top: 12px; text-align: center; }
+            .foot { margin-top: 10px; font-size: 12px; text-align: center; }
+            img.logo { width: 96px; height: 96px; object-fit: cover; border-radius: 9999px; display:block; margin: 0 auto 4px; background:#fff; }
+            img.qr { width: 140px; height: 140px; }
+          </style>
+        </head>
+        <body>
+          <div class="ticket">
+            <div class="center">
+              <img class="logo" src="${logoUrl}" onerror="this.style.display='none'" />
+              <div class="title">Cocina Casera</div>
+              <div class="muted">(Uso interno - No es factura DIAN)</div>
+            </div>
+            <div class="line"></div>
+            <div class="row"><span class="label">Tipo:</span> ${tipo}</div>
+            <div class="row"><span class="label">Pago:</span> ${pago}</div>
+            <div class="row"><span class="label">Total:</span> $${total}</div>
+            <div class="row"><span class="label">Fecha:</span> ${fecha}</div>
+            <div class="row"><span class="label">Entrega:</span> ${entregaTexto}</div>
+            <div class="line"></div>
+            <div class="row"><span class="label">Dirección:</span> ${direccion || ''}</div>
+            ${barrio ? `<div class="row"><span class="label">Barrio:</span> ${barrio}</div>` : ''}
+            <div class="row"><span class="label">Teléfono:</span> ${telefono || ''}</div>
+            ${detalles ? `<div class="row"><span class="label">Detalles:</span> ${detalles}</div>` : ''}
+            <div class="line"></div>
+            <div class="row" style="font-weight:700;">✅ Resumen del Pedido</div>
+            ${htmlResumen}
+            <div class="line"></div>
+            <div class="center">
+              <div>Gracias por pedir en Cocina Casera</div>
+              <div>Te esperamos mañana con un nuevo menú.</div>
+              <div>Escríbenos al 301 6476916</div>
+              <div>Calle 133#126c-09</div>
+            </div>
+            <div class="qr">
+              <div>Escanea este código QR para unirte</div>
+              <div>a nuestro canal de WhatsApp</div>
+              <div>y recibir nuestro menú diario:</div>
+              ${qrCodeDataUrl ? `<img class="qr" src="${qrCodeDataUrl}" />` : ''}
+            </div>
+          </div>
+          <script>window.onload = () => { window.print(); setTimeout(() => window.close(), 300); };</script>
+        </body>
+      </html>
+    `);
     win.document.close();
-    win.focus();
-    setTimeout(() => {
-      win.print();
-      win.close();
-    }, 500);
-  });
+    return;
+  }
 };
 
 // Firestore para persistir pagos
@@ -1514,6 +2278,7 @@ const TablaPedidos = ({
                 <span className="hidden md:inline">Proteínas del Día</span>
               </button>
             )}
+            
             <label
               className={classNames(
                 'relative flex items-center justify-center gap-2 px-3 py-2 sm:px-5 sm:py-3 rounded-lg text-xs sm:text-sm font-semibold shadow-sm border transition-colors duration-200 flex-shrink-0 cursor-pointer',
