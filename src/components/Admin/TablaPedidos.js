@@ -1104,44 +1104,26 @@ const handlePrintDeliveryReceipt = async (order, allSides = []) => {
       return sanitize(receipt);
     };
 
-    // Función para convertir imagen a base64
+    // Función para convertir imagen a base64 (SIMPLE como funcionaba antes)
     const getLogoBase64 = async () => {
       try {
+        console.log('🔄 Domicilios: Cargando logo desde /logo.png...');
         const response = await fetch('/logo.png');
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
         const blob = await response.blob();
-        const imgBitmap = await createImageBitmap(blob);
-
-        // Normalizar a lienzo cuadrado para que se vea circular correctamente
-        const size = 256; // px
-        const canvas = document.createElement('canvas');
-        canvas.width = size; canvas.height = size;
-        const ctx = canvas.getContext('2d');
-
-        // Fondo blanco
-        ctx.fillStyle = '#FFFFFF';
-        ctx.fillRect(0, 0, size, size);
-
-        // Recortar a círculo (máscara)
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(size/2, size/2, size/2 - 2, 0, Math.PI * 2);
-        ctx.closePath();
-        ctx.clip();
-
-        // Dibujar imagen centrada y contenida
-        const ratio = Math.min(size / imgBitmap.width, size / imgBitmap.height);
-        const w = imgBitmap.width * ratio;
-        const h = imgBitmap.height * ratio;
-        const x = (size - w) / 2;
-        const y = (size - h) / 2;
-        ctx.drawImage(imgBitmap, x, y, w, h);
-        ctx.restore();
-
-        const dataUrl = canvas.toDataURL('image/png');
-        const base64 = dataUrl.split(',')[1];
-        return base64;
+        return new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const base64 = reader.result.split(',')[1]; // Remover prefijo data:image/png;base64,
+            console.log('✅ Domicilios: Logo cargado exitosamente');
+            resolve(base64);
+          };
+          reader.readAsDataURL(blob);
+        });
       } catch (error) {
-        console.warn('No se pudo cargar el logo:', error);
+        console.warn('❌ Domicilios: No se pudo cargar el logo:', error);
         return null;
       }
     };
@@ -1409,30 +1391,31 @@ const handlePrintDeliveryReceipt = async (order, allSides = []) => {
       return out;
     };
 
-    // Imprimir con logo
-  // Desactivar modo gráfico por defecto para evitar problemas de raster en algunos modelos.
-  // Solo se activa si explícitamente se define localStorage.useGraphicTicket = '1'.
-  const useGraphicTicket = (typeof localStorage !== 'undefined' && localStorage.getItem('useGraphicTicket') === '1');
-    if (useGraphicTicket) {
-      // Generar canvas del ticket y mandarlo como raster ESC/POS directo (sin usar printWithImage)
-      const ticketCanvas = await renderTicketCanvas();
-      const raster = canvasToEscPosRaster(ticketCanvas, { threshold: 180, align: 'left' });
-      const cut = '\x1D' + 'V' + '\x41' + '\x03'; // corte parcial
-      const feed = '\n\n\n';
+    // Imprimir con logo (similar a mesas - siempre intentar con imagen)
+    // Cambiar la lógica para que siempre intente printWithImage como en mesas
+    const thermalData = generateThermalReceipt();
+    const logoBase64 = await getLogoBase64();
+    
+    console.log(`🖨️ Domicilios: Intentando imprimir en ${currentPrinterIp}:${currentPrinterPort}`);
+    console.log(`🖨️ Logo disponible: ${logoBase64 ? 'SÍ' : 'NO'}`);
+    
+    if (logoBase64) {
+      // Usar la nueva función con imagen (igual que en mesas)
+      await PrinterPlugin.printWithImage({
+        ip: currentPrinterIp,
+        port: currentPrinterPort,
+        data: thermalData,
+        imageBase64: logoBase64
+      });
+      console.log('✅ Domicilios: Recibo impreso con LOGO');
+    } else {
+      // Usar función básica sin imagen
       await PrinterPlugin.printTCP({
         ip: currentPrinterIp,
         port: currentPrinterPort,
-        data: raster + feed + cut
+        data: thermalData
       });
-    } else {
-      // Camino anterior: texto ESC/POS + logo circular en encabezado
-      const thermalData = generateThermalReceipt();
-      const logoBase64 = await getLogoBase64();
-      if (logoBase64) {
-        await PrinterPlugin.printWithImage({ ip: currentPrinterIp, port: currentPrinterPort, data: thermalData, imageBase64: logoBase64 });
-      } else {
-        await PrinterPlugin.printTCP({ ip: currentPrinterIp, port: currentPrinterPort, data: thermalData });
-      }
+      console.log('⚠️ Domicilios: Recibo impreso SIN logo (no se pudo cargar)');
     }
     
     console.log('✅ TablaPedidos: Recibo de domicilio impreso en impresora térmica');

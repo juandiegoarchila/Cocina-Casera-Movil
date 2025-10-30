@@ -350,25 +350,29 @@ const TableOrdersAdmin = ({ theme = 'light' }) => {
         receipt += 'Calle 133#126c-09\n';
         receipt += '\n';
         
-        // QR Code texto (igual al web)
+        // QR Code texto (actualizado para usar canal como domicilios)
         receipt += 'Escanea este código QR para\n';
         receipt += 'unirte a nuestro canal de\n';
         receipt += 'WhatsApp y recibir nuestro\n';
         receipt += 'menú diario:\n';
         receipt += '\n';
         
-        // Generar QR code nativo
-        receipt += GS + '(k' + '\x04' + '\x00' + '\x31' + '\x41' + '\x32' + '\x00'; // QR setup
-        receipt += GS + '(k' + '\x03' + '\x00' + '\x31' + '\x43' + '\x08'; // QR size 8
-        receipt += GS + '(k' + '\x03' + '\x00' + '\x31' + '\x45' + '\x30'; // QR error correction
-        
-        // Datos del QR (WhatsApp - igual al web)
-        const qrData = 'https://wa.me/573016476916?text=Hola%20quiero%20el%20menú';
+        // Generar QR code nativo (EXACTO como domicilios que funciona)
+        receipt += ESC + 'a' + '\x01'; // centrar
+        // Seleccionar modo de QR y tamaño
+        receipt += GS + '(k' + '\x04' + '\x00' + '\x31' + '\x41' + '\x32' + '\x00'; // Select model 2
+        receipt += GS + '(k' + '\x03' + '\x00' + '\x31' + '\x43' + '\x08'; // Module size 8
+        receipt += GS + '(k' + '\x03' + '\x00' + '\x31' + '\x45' + '\x30'; // Error correction L
+
+        const qrData = 'https://whatsapp.com/channel/0029VafyYdVAe5VskWujmK0C';
         const qrLength = qrData.length + 3;
-        const qrLenLow = qrLength % 256;
-        const qrLenHigh = Math.floor(qrLength / 256);
-        receipt += GS + '(k' + String.fromCharCode(qrLenLow, qrLenHigh) + '\x00' + '\x31' + '\x50' + '\x30' + qrData;
-        receipt += GS + '(k' + '\x03' + '\x00' + '\x31' + '\x51' + '\x30'; // Imprimir QR
+        const pL = String.fromCharCode(qrLength & 0xff);
+        const pH = String.fromCharCode((qrLength >> 8) & 0xff);
+        // Store data
+        receipt += GS + '(k' + pL + pH + '\x31' + '\x50' + '\x30' + qrData;
+        // Print the QR
+        receipt += GS + '(k' + '\x03' + '\x00' + '\x31' + '\x51' + '\x30';
+        receipt += ESC + 'a' + '\x00'; // volver a izquierda
         
         receipt += '\n\n\n';
         
@@ -378,21 +382,26 @@ const TableOrdersAdmin = ({ theme = 'light' }) => {
         return receipt;
       };
 
-      // Función para convertir imagen a base64
+      // Función para convertir imagen a base64 (SIMPLE como funcionaba antes)
       const getLogoBase64 = async () => {
         try {
+          console.log('🔄 Mesas: Cargando logo desde /logo.png...');
           const response = await fetch('/logo.png');
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
           const blob = await response.blob();
           return new Promise((resolve) => {
             const reader = new FileReader();
             reader.onloadend = () => {
               const base64 = reader.result.split(',')[1]; // Remover prefijo data:image/png;base64,
+              console.log('✅ Mesas: Logo cargado exitosamente');
               resolve(base64);
             };
             reader.readAsDataURL(blob);
           });
         } catch (error) {
-          console.warn('No se pudo cargar el logo:', error);
+          console.warn('❌ Mesas: No se pudo cargar el logo:', error);
           return null;
         }
       };
